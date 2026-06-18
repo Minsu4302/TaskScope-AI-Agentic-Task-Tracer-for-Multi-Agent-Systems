@@ -15,6 +15,8 @@ dependencies {
     implementation("io.micrometer:micrometer-tracing-bridge-otel")
     // OTLP exporter: OTel Collector로 span 전송
     implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    // Micrometer OTLP 메트릭 익스포터
+    implementation("io.micrometer:micrometer-registry-otlp")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

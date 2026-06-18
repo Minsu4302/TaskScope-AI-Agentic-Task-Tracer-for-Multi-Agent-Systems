@@ -1,0 +1,115 @@
+{
+  "title": "TaskScope — LLM Cost & Tracing",
+  "uid": "taskscope-main",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "LLM Calls / min (by task type)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(llm_calls_total[1m])) by (task_type)",
+          "legendFormat": "{{task_type}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "LLM Cost USD / min (by task type)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(llm_cost_usd_total[1m])) by (task_type)",
+          "legendFormat": "{{task_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Total LLM Cost by Model",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(llm_cost_usd_total[1h])) by (llm_model)",
+          "legendFormat": "{{llm_model}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Input Tokens / min (by model)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(llm_input_tokens_total[1m])) by (llm_model)",
+          "legendFormat": "in:{{llm_model}}"
+        },
+        {
+          "expr": "sum(rate(llm_output_tokens_total[1m])) by (llm_model)",
+          "legendFormat": "out:{{llm_model}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Worker Duration P95 (by span name)",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(taskscope_duration_milliseconds_bucket{span_name=~\"worker\\\\..*\"}[5m])) by (le, span_name))",
+          "legendFormat": "p95 {{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Worker Calls / min (spanmetrics)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(taskscope_calls_total{span_name=~\"worker\\\\..*\"}[1m])) by (span_name, task_type)",
+          "legendFormat": "{{span_name}} / {{task_type}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "LLM Calls by Complexity (premium vs standard)",
+      "type": "bargauge",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "taskscope-prometheus" },
+      "options": { "orientation": "horizontal" },
+      "targets": [
+        {
+          "expr": "sum(increase(llm_calls_total[1h])) by (task_complexity)",
+          "legendFormat": "{{task_complexity}}"
+        }
+      ]
+    }
+  ]
+}
