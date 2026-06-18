@@ -1,9 +1,9 @@
-package com.taskscope.dispatcher.config;
+package com.taskscope.workers.config;
 
-import io.micrometer.observation.ObservationRegistry;
-import org.springframework.amqp.core.*;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.DirectExchange;
+import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
@@ -12,10 +12,10 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitMQConfig {
 
-    public static final String EXCHANGE_NAME = "taskscope.exchange";
+    public static final String EXCHANGE_NAME     = "taskscope.exchange";
     public static final String QUEUE_CODE_REVIEW = "taskscope.queue.code-review";
-    public static final String QUEUE_SECURITY   = "taskscope.queue.security";
-    public static final String QUEUE_TEST_GEN   = "taskscope.queue.test-gen";
+    public static final String QUEUE_SECURITY    = "taskscope.queue.security";
+    public static final String QUEUE_TEST_GEN    = "taskscope.queue.test-gen";
 
     @Bean DirectExchange taskscopeExchange() {
         return new DirectExchange(EXCHANGE_NAME, true, false);
@@ -37,13 +37,5 @@ public class RabbitMQConfig {
 
     @Bean MessageConverter jsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
-    }
-
-    @Bean AmqpTemplate amqpTemplate(ConnectionFactory connectionFactory, ObservationRegistry observationRegistry) {
-        RabbitTemplate template = new RabbitTemplate(connectionFactory);
-        template.setMessageConverter(jsonMessageConverter());
-        // traceparent를 AMQP 메시지 헤더에 자동 주입하기 위해 필수
-        template.setObservationEnabled(true);
-        return template;
     }
 }

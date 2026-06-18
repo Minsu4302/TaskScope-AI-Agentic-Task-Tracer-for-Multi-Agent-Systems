@@ -45,6 +45,54 @@
 
 ---
 
+### [2026-06-18] workers 구현 완료 — dispatcher→worker end-to-end trace 확인
+
+**카테고리**: 성과 측정 + 트러블슈팅
+
+**문제 상황: trace context 끊김**
+workers 최초 기동 시 로그에서 trace ID가 dispatcher와 달랐음:
+- dispatcher: `6ec8de407fccdc5aa4da5ef243ba8250`
+- CodeReviewWorker: `530d98c80018a3ae077d378018a5c541` ← 새 trace 생성됨
+
+**원인 분석**
+dispatcher의 `RabbitTemplate` 빈이 커스텀으로 정의되어 있었는데, `observationEnabled=true`를 설정하지 않아 메시지 발행 시 `traceparent` 헤더가 AMQP 메시지에 주입되지 않음. Workers 수신 시 헤더가 없으므로 새 root trace 생성.
+
+**해결 방법**
+dispatcher `RabbitMQConfig.amqpTemplate()`에 `template.setObservationEnabled(true)` 추가.
+Workers는 `WorkersConfig`에서 `factory.setObservationEnabled(true)` 이미 설정됨.
+
+**결과 (수치)**
+
+Jaeger trace `c586d34aee7baf78c0fff249557475aa` — **하나의 trace에 19개 span 귀속**:
+
+```
+http post /tasks [289ms, root]
+  └── task.dispatch [159ms]
+        ├── send code-review [10ms]  ← Micrometer AMQP publish span
+        ├── send security [0.9ms]
+        ├── send test-gen [1.5ms]
+        ├── receive code-review [317ms]  ← Micrometer AMQP consume span
+        │     └── worker.code_review [9ms]
+        │           ├── llm.call [iter 1]
+        │           └── llm.call [iter 2, finished]
+        ├── receive security [314ms]
+        │     └── worker.security [6ms]
+        │           ├── llm.call [iter 1]
+        │           ├── llm.call [iter 2]
+        │           └── llm.call [iter 3, finished]
+        └── receive test-gen [316ms]
+              └── worker.test_gen [13ms]
+                    ├── llm.call [iter 1]
+                    ├── llm.call [iter 2]
+                    └── llm.call [iter 3, finished]
+```
+
+- trace propagation 정확도: 3/3 워커 100% 동일 trace ID 공유
+- 루프 캡(MAX 5회) 단위 테스트 3개 통과
+- Stub LLM 비용 기록: premium/Opus 기준 code_review $0.126, security $0.147, test_gen $0.180
+
+---
+
 ### [2026-06-18] dispatcher 구현 완료 — POST /tasks → Jaeger trace 확인
 
 **카테고리**: 성과 측정
