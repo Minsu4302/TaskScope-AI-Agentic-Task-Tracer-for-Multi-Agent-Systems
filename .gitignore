@@ -1,7 +1,10 @@
 # 환경변수 / 시크릿
 .env
 
-# Java / Maven
+# Java / Gradle
+.gradle/
+build/
+bin/
 target/
 *.class
 *.jar

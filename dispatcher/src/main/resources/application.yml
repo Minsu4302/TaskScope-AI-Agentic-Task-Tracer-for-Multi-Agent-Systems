@@ -10,11 +10,17 @@ spring:
 server:
   port: 8080
 
-# OTel SDK 설정 (opentelemetry-spring-boot-starter가 읽음)
-otel:
-  exporter:
-    otlp:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:14320}
-      protocol: grpc
-  service:
-    name: taskscope-dispatcher
+management:
+  tracing:
+    enabled: true
+    sampling:
+      probability: 1.0   # 개발 환경: 100% 샘플링
+    propagation:
+      type: w3c           # traceparent 헤더 포맷
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:14321}/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

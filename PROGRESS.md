@@ -45,6 +45,32 @@
 
 ---
 
+### [2026-06-18] dispatcher 구현 완료 — POST /tasks → Jaeger trace 확인
+
+**카테고리**: 성과 측정
+
+**구현 내용**
+- `POST /tasks` 엔드포인트: PR 정보 수신 → OTel span 생성 → RabbitMQ publish
+- `ComplexityRouter`: diffLines 기반 정적 휴리스틱 (< 200: standard/Haiku, ≥ 200: premium/Opus)
+- `TaskService`: `task.dispatch` OTel span 생성 후 모든 worker publish를 그 span 컨텍스트 안에서 실행 → 워커들이 같은 trace에 묶임
+- Micrometer Tracing bridge: Spring AMQP 메시지 헤더에 `traceparent` 자동 주입
+
+**결과 (수치)**
+
+Jaeger trace `6ec8de407fccdc5aa4da5ef243ba8250` 확인:
+```
+http post /tasks  [320ms, root]
+  └── task.dispatch  [130ms]
+        tags: task.id, task.complexity=premium, llm.model=claude-opus-4-8
+```
+
+- `POST /tasks` 응답 HTTP 202 (QUEUED)
+- span attribute 전체 기록 확인: `task.id`, `task.complexity`, `llm.model`, `task.type`
+- 로그 MDC에 traceId 자동 주입 확인 (`[6ec8de407fccdc5aa4da5ef243ba8250-8759695cd37ee076]`)
+- Jaeger UI에서 `taskscope-dispatcher` 서비스 drill-down 가능
+
+---
+
 ### [2026-06-18] Gradle 멀티 모듈 빌드 설정 — 3단계 트러블슈팅
 
 **카테고리**: 트러블슈팅
