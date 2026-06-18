@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: taskscope-dispatcher
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:taskscope}
+    password: ${RABBITMQ_PASS:taskscope}
+
+server:
+  port: 8080
+
+# OTel SDK 설정 (opentelemetry-spring-boot-starter가 읽음)
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:14320}
+      protocol: grpc
+  service:
+    name: taskscope-dispatcher

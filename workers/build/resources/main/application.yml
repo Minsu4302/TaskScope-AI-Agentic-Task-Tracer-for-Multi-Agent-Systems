@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: taskscope-workers
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:taskscope}
+    password: ${RABBITMQ_PASS:taskscope}
+
+# OTel SDK 설정
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:14320}
+      protocol: grpc
+  service:
+    name: taskscope-workers

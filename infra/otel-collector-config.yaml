@@ -1,0 +1,51 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+# spanmetrics connector: trace span → Prometheus 메트릭 자동 변환
+# task.type / llm.model 차원으로 집계 → Grafana 대시보드 기반
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [500ms, 1s, 2s, 5s, 10s, 30s, 60s]
+    dimensions:
+      - name: task.type
+      - name: task.complexity
+      - name: llm.model
+    metrics_flush_interval: 15s
+    namespace: taskscope
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # 트레이스 → Jaeger (drill-down용)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # 메트릭 → Prometheus scrape 엔드포인트
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+  # 디버그 로그 (개발 중 span 확인용)
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, spanmetrics, debug]
+    metrics:
+      receivers: [spanmetrics]
+      exporters: [prometheus]

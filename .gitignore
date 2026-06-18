@@ -1,0 +1,22 @@
+# 환경변수 / 시크릿
+.env
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log
+logs/
