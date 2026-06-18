@@ -25,24 +25,24 @@ public class TaskService {
 
     private final AmqpTemplate amqpTemplate;
     private final ComplexityRouter complexityRouter;
+    private final CostGuardrailService costGuardrailService;
     private final Tracer tracer;
 
-    public TaskService(AmqpTemplate amqpTemplate, ComplexityRouter complexityRouter, Tracer tracer) {
+    public TaskService(AmqpTemplate amqpTemplate, ComplexityRouter complexityRouter,
+                       CostGuardrailService costGuardrailService, Tracer tracer) {
         this.amqpTemplate = amqpTemplate;
         this.complexityRouter = complexityRouter;
+        this.costGuardrailService = costGuardrailService;
         this.tracer = tracer;
     }
 
     public TaskResponse dispatch(TaskRequest request) {
         String taskId = UUID.randomUUID().toString();
-        String modelGrade = complexityRouter.route(request.diffLines());
-        String model = complexityRouter.modelFor(modelGrade);
+        String staticGrade = complexityRouter.route(request.diffLines());
 
-        // task.dispatch span: 모든 워커 publish의 부모 — 같은 trace에 묶이게 됨
         Span taskSpan = tracer.spanBuilder("task.dispatch")
                 .setAttribute(SpanAttributes.TASK_ID, taskId)
-                .setAttribute(SpanAttributes.TASK_COMPLEXITY, modelGrade)
-                .setAttribute(SpanAttributes.LLM_MODEL, model)
+                .setAttribute(SpanAttributes.TASK_COMPLEXITY, staticGrade)
                 .startSpan();
 
         try (Scope ignored = taskSpan.makeCurrent()) {
@@ -50,20 +50,30 @@ public class TaskService {
                 String queueName = TASK_TYPE_TO_QUEUE.get(taskType);
                 if (queueName == null) continue;
 
+                // 과거 비용 집계 기반 모델 등급 재조정 (premium→standard 강등 가능)
+                CostGuardrailService.GuardrailResult guardrail =
+                        costGuardrailService.apply(staticGrade, taskType);
+                String effectiveGrade = guardrail.effectiveGrade();
+
                 taskSpan.setAttribute(SpanAttributes.TASK_TYPE, taskType);
+                taskSpan.setAttribute(SpanAttributes.LLM_MODEL, complexityRouter.modelFor(effectiveGrade));
+
+                if (guardrail.downgraded()) {
+                    taskSpan.setAttribute(SpanAttributes.GUARDRAIL_ACTION, "model_downgrade");
+                    taskSpan.setAttribute(SpanAttributes.GUARDRAIL_REASON, guardrail.reason());
+                }
 
                 TaskMessage message = new TaskMessage(
                         taskId, taskType,
                         request.repoUrl(), request.prNumber(),
-                        request.diffLines(), modelGrade
+                        request.diffLines(), effectiveGrade
                 );
-                // Micrometer Tracing이 traceparent를 AMQP 메시지 헤더에 자동 주입
                 amqpTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, queueName, message);
             }
         } finally {
             taskSpan.end();
         }
 
-        return new TaskResponse(taskId, "QUEUED", modelGrade, request.taskTypes());
+        return new TaskResponse(taskId, "QUEUED", staticGrade, request.taskTypes());
     }
 }

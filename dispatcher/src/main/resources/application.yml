@@ -28,3 +28,8 @@ management:
     web:
       exposure:
         include: health,info,metrics
+
+taskscope:
+  guardrail:
+    prometheus-url: ${PROMETHEUS_URL:http://localhost:19090}
+    cost-threshold-usd: ${GUARDRAIL_COST_THRESHOLD_USD:0.05}
