@@ -1,6 +1,7 @@
 package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BaseWorkerLoopCapTest {
 
     private static final Tracer NOOP_TRACER = OpenTelemetry.noop().getTracer("test");
+    private static final SimpleMeterRegistry METER_REGISTRY = new SimpleMeterRegistry();
 
     private static final TaskMessage SAMPLE = new TaskMessage(
             "task-1", "test", "https://github.com/example/repo", "42", 100, "standard"
@@ -50,7 +52,7 @@ class BaseWorkerLoopCapTest {
     // --- helpers ---
 
     private BaseWorker neverFinishingWorker(AtomicInteger counter) {
-        return new BaseWorker(NOOP_TRACER) {
+        return new BaseWorker(NOOP_TRACER, METER_REGISTRY) {
             @Override protected String spanName() { return "test.never"; }
             @Override protected LlmResult invokeLlm(TaskMessage msg, int iteration) {
                 counter.incrementAndGet();
@@ -60,7 +62,7 @@ class BaseWorkerLoopCapTest {
     }
 
     private BaseWorker finishesAtIterationWorker(AtomicInteger counter, int finishAt) {
-        return new BaseWorker(NOOP_TRACER) {
+        return new BaseWorker(NOOP_TRACER, METER_REGISTRY) {
             @Override protected String spanName() { return "test.early"; }
             @Override protected LlmResult invokeLlm(TaskMessage msg, int iteration) {
                 counter.incrementAndGet();

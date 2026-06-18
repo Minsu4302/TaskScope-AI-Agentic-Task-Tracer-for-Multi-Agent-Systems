@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
 import com.taskscope.workers.config.RabbitMQConfig;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,8 +14,8 @@ public class SecurityWorker extends BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityWorker.class);
 
-    public SecurityWorker(Tracer tracer) {
-        super(tracer);
+    public SecurityWorker(Tracer tracer, MeterRegistry meterRegistry) {
+        super(tracer, meterRegistry);
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_SECURITY)

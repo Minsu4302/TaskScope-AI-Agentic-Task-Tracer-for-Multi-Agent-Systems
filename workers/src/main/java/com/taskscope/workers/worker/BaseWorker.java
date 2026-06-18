@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.SpanAttributes;
 import com.taskscope.shared.TaskMessage;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -15,9 +16,11 @@ public abstract class BaseWorker {
     private static final Logger log = LoggerFactory.getLogger(BaseWorker.class);
 
     private final Tracer tracer;
+    private final MeterRegistry meterRegistry;
 
-    protected BaseWorker(Tracer tracer) {
+    protected BaseWorker(Tracer tracer, MeterRegistry meterRegistry) {
         this.tracer = tracer;
+        this.meterRegistry = meterRegistry;
     }
 
     protected void process(TaskMessage message) {
@@ -47,7 +50,6 @@ public abstract class BaseWorker {
             }
         }
 
-        // 루프 캡 도달 — 강제 종료 + span에 가드레일 작동 기록
         log.warn("[{}] task={} hit loop cap ({})", spanName(), message.taskId(), MAX_LOOP_ITERATIONS);
         workerSpan.setAttribute(SpanAttributes.AGENT_LOOP_CAP_HIT, true);
         workerSpan.setAttribute(SpanAttributes.GUARDRAIL_ACTION, "force_terminate");
@@ -58,6 +60,7 @@ public abstract class BaseWorker {
     private LlmResult callLlm(TaskMessage message, int iteration, String model) {
         Span llmSpan = tracer.spanBuilder("llm.call")
                 .setAttribute(SpanAttributes.TASK_ID, message.taskId())
+                .setAttribute(SpanAttributes.TASK_TYPE, message.taskType())   // spanmetrics 레이블용
                 .setAttribute(SpanAttributes.LLM_MODEL, model)
                 .setAttribute(SpanAttributes.AGENT_LOOP_ITERATION, iteration)
                 .startSpan();
@@ -67,6 +70,22 @@ public abstract class BaseWorker {
             llmSpan.setAttribute(SpanAttributes.LLM_INPUT_TOKENS, result.inputTokens());
             llmSpan.setAttribute(SpanAttributes.LLM_OUTPUT_TOKENS, result.outputTokens());
             llmSpan.setAttribute(SpanAttributes.LLM_COST_USD, result.costUsd());
+
+            // Micrometer 카운터 — Prometheus에서 집계 가능한 비용/토큰 메트릭
+            String taskType = message.taskType();
+            meterRegistry.counter("llm.calls",
+                    "task_type", taskType, "llm_model", model, "task_complexity", message.modelGrade()
+            ).increment();
+            meterRegistry.counter("llm.cost.usd",
+                    "task_type", taskType, "llm_model", model
+            ).increment(result.costUsd());
+            meterRegistry.counter("llm.input.tokens",
+                    "task_type", taskType, "llm_model", model
+            ).increment(result.inputTokens());
+            meterRegistry.counter("llm.output.tokens",
+                    "task_type", taskType, "llm_model", model
+            ).increment(result.outputTokens());
+
             return result;
         } finally {
             llmSpan.end();
@@ -75,7 +94,6 @@ public abstract class BaseWorker {
 
     protected abstract String spanName();
 
-    // 서브클래스가 실제 LLM 호출(또는 stub)을 구현
     protected abstract LlmResult invokeLlm(TaskMessage message, int iteration);
 
     private String resolveModel(String modelGrade) {
