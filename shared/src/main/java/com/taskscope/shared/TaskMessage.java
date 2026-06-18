@@ -6,6 +6,6 @@ public record TaskMessage(
         String repoUrl,
         String prNumber,
         int diffLines,
-        String modelGrade,    // "standard" | "premium" — 복잡도 라우터가 결정
-        String traceparent    // W3C traceparent 헤더값 — trace context propagation용
+        String modelGrade     // "standard" | "premium" — 복잡도 라우터가 결정
+        // traceparent는 Spring AMQP + Micrometer가 메시지 헤더로 자동 전파
 ) {}
