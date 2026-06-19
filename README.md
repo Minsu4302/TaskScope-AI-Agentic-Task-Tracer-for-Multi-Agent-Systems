@@ -123,15 +123,45 @@ http post /tasks          ← 자동 계측 (HTTP root span)
 
 ## 검증 결과 (수치)
 
+### 트레이싱 & 가드레일
+
 | 항목 | Before | After |
 |------|--------|-------|
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | **100%** (19 span 단일 trace) |
 | Worker 재기동 시 trace context 생존 | 미확인 | **100%** (RabbitMQ 헤더 보존) |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | **3분 이내** (대시보드 drill-down) |
-| 가드레일 강등 시 task 비용 | $0.62/task (premium) | **$0.023/task** (standard, ~96% 절감) |
-| task당 루프 상한 | 무제한 | **최대 5회** (평균 2.67회/워커) |
+| 가드레일 강등 시 task 비용 | $0.217/task (premium 3워커) | **$0.023/task** (standard 강등, ~89% 절감) |
+| task당 루프 상한 | 무제한 | **최대 5회** (loop cap 가드레일) |
 
-> stub LLM 기준 (실제 Claude API 연동 시 동일 구조로 측정 가능)
+### 실제 Claude API 연동 실측 (Phase 3/4)
+
+| 커밋 크기 | 워커 | 모델 | 이터레이션 | 비용/task | 비고 |
+|---|---|---|---|---|---|
+| SMALL (<50줄) | code_review | Haiku | **1회** | $0.002 | greedy regex 수정 후 |
+| MEDIUM (50~299줄) | code_review | Haiku | **1회** | $0.006~0.008 | |
+| MEDIUM (189줄) | test_gen | Haiku | **1회** (out=1960) | $0.013 | maxTokens=2048이었다면 잘림 |
+| LARGE (465줄) | code_review | Sonnet | **1회** (out=2139) | $0.054 | |
+| LARGE (465줄) | test_gen | Sonnet | **5회** (loop cap) | $0.415 | 알려진 한계 참고 |
+
+### LLM 루프 retry 원인 분류 (Phase 4 재실측)
+
+| 원인 | 해소 여부 |
+|---|---|
+| lazy regex가 응답 내 코드블록(` ```java``` `)에서 조기 종료 → JSON 잘림 | ✅ greedy regex로 해소 |
+| maxTokens=2048 초과 (LARGE Sonnet 자연 출력 ~2100 토큰) | ✅ 4096으로 해소 |
+| 본질적 장문 (test_gen LARGE, 출력 4096+ 토큰) | ❌ 미해결 (아래 한계 참고) |
+
+---
+
+## 알려진 한계
+
+**test_gen + LARGE 커밋 조합에서 loop cap 도달**
+
+`test_gen` 워커가 diffLines ≥ 300인 커밋을 처리할 때 출력 토큰이 4096을 초과해 완성된 테스트 코드를 반환하지 못하고 loop cap(5회)에 도달합니다.
+
+- 영향: `test_gen` LARGE task만 해당. `code_review` / `security`는 동일 커밋 크기에서 정상 완료
+- 현재 동작: loop cap 도달 시 span에 `guardrail.reason` 기록 후 강제 종료, 불완전 결과 미반환
+- 개선 방향: test_gen 프롬프트에 출력 범위 제한 명시 ("핵심 3가지 케이스만 작성") 또는 LARGE test_gen을 별도 task 유형으로 분리
 
 ---
 
@@ -218,18 +248,36 @@ java -jar workers/build/libs/workers-0.0.1-SNAPSHOT.jar
 
 ### 5. 작업 전송
 
+**GitHub 커밋 기반 자동 dispatch (권장)**
+
+```bash
+curl -X POST http://localhost:8080/tasks/commits \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repos": ["owner/repo"],
+    "commitsPerRepo": 10,
+    "sampleSize": 3,
+    "taskUnit": "single_commit",
+    "taskTypes": ["code_review", "security", "test_gen"]
+  }'
+```
+
+`sampleSize=3`이면 SMALL·MEDIUM·LARGE 각 1개씩 라운드로빈 자동 선택. GitHub에서 실제 diff를 fetch해 LLM에 전달.
+
+**수동 dispatch (레거시)**
+
 ```bash
 curl -X POST http://localhost:8080/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "repoUrl": "https://github.com/example/repo",
-    "prNumber": "42",
+    "repoUrl": "owner/repo",
+    "prNumber": "커밋SHA",
     "diffLines": 250,
     "taskTypes": ["code_review", "security", "test_gen"]
   }'
 ```
 
-`diffLines >= 200` → premium(Opus), `< 200` → standard(Haiku)
+`diffLines >= 300` → LARGE(premium/Sonnet), `50~299` → MEDIUM(standard/Haiku), `< 50` → SMALL(standard/Haiku)
 
 ### 6. Trace 확인
 
@@ -253,6 +301,9 @@ cp .env.example .env
 |------|--------|------|
 | `RABBITMQ_USER` | taskscope | RabbitMQ 사용자 |
 | `RABBITMQ_PASS` | taskscope | RabbitMQ 비밀번호 |
+| `ANTHROPIC_API_KEY` | — | Claude API 키 (필수) |
+| `GITHUB_TOKEN` | — | GitHub Personal Access Token (커밋 diff fetch용, 필수) |
+| `LLM_MAX_TOKENS` | 4096 | LLM 응답 최대 토큰 수 (코드 수정 없이 실험 가능) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | http://localhost:14321 | OTel Collector HTTP 엔드포인트 |
 | `PROMETHEUS_URL` | http://localhost:19090 | 가드레일용 Prometheus 주소 |
 | `GUARDRAIL_COST_THRESHOLD_USD` | 0.05 | 모델 강등 임계값 ($/call) |

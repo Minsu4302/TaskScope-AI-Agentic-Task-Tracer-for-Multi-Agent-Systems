@@ -120,7 +120,17 @@ Pattern.compile("```(?:json)?\\s*([\\s\\S]*)```")
 | maxTokens=2048 초과 | LARGE 커밋(Sonnet) output ~2100 토큰 | ✅ 4096으로 해소 |
 | 본질적 장문 (test_gen LARGE) | 테스트 코드 생성 자체가 4096+ 토큰 필요 | ❌ 미해결 (다음 단계 과제) |
 
-**커밋**: `feat/max-tokens-4096-remeasure` 브랜치, `AnthropicLlmClient.java` + `application.yml` + `BaseWorker.java`
+**커밋**: `e3f4d29` (`feat/max-tokens-4096-remeasure` → main PR #14)
+
+**알려진 한계 (Known Limitation)**
+
+> `test_gen` 워커 + LARGE 커밋(diffLines ≥ 300) 조합에서 출력이 4096 토큰을 초과해 loop cap(5회)에 도달하고 완성된 테스트 코드를 반환하지 못함.
+>
+> - 근본 원인: 테스트 케이스 생성은 구현 코드보다 장문이 되는 구조적 특성 (JUnit boilerplate + assertion × n cases)
+> - 영향 범위: LARGE 커밋의 `test_gen` task — code_review/security는 동일 크기에서 1회 완료
+> - maxTokens를 4096 이상으로 올려도 비용 증가 대비 효과 불분명 (loop cap까지 총 $0.415/task)
+> - 해결 방향: (1) test_gen 프롬프트 전략 변경 — "3가지 핵심 케이스만 작성" 등 출력 범위 제한, (2) 복잡도 분류 고도화 — LARGE test_gen을 별도 task 유형으로 분리해 전용 처리 전략 적용
+> - 현재 동작: loop cap 도달 → span에 `guardrail.reason=max_iterations_5_reached (last_status=retry)` 기록, 불완전 결과는 반환하지 않음 (데이터 누출 방지는 유지)
 
 ---
 
