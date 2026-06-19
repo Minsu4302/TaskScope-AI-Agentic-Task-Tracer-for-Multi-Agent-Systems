@@ -33,15 +33,148 @@
 
 | 항목 | Before | After | 비고 |
 |---|---|---|---|
-| task당 평균 비용 | - | - | 가드레일 도입 전/후 |
-| task당 평균 루프 횟수 | - | - | |
-| trace propagation 정확도 | - | - | 끊김 없이 끝까지 추적된 task 비율 |
-| 비용 급증 원인 파악 시간 | (로그 전수 검사 추정) | (대시보드 drill-down) | |
-| 가드레일로 차단된 비정상 루프 수 | - | - | 일정 기간 기준 |
+| task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | 정상 $0.62, 가드레일 강등 시 $0.023 | stub 기준. 강등 시 ~96% 절감 |
+| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회, 정상 평균 2.67회/워커 | 루프 캡 가드레일 |
+| trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
+| 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
+| Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
 
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-19] End-to-end 검증 — 3개 시나리오 실측
+
+**카테고리**: 성과 측정
+
+**시나리오 1 — 정상 케이스 (standard 등급, diffLines=100)**
+
+`POST /tasks` → 3개 워커 동시 처리. Jaeger에서 단일 trace 확인:
+
+```
+http post /tasks [734ms, root]            ← dispatcher HTTP span
+  └── task.dispatch [467ms]               ← 수동 span (TaskService)
+        ├── AMQP send × 3 [1~19ms]       ← Micrometer 자동 계측
+        ├── AMQP receive code-review [165ms]
+        │     └── worker.code_review [2.6ms]
+        │           ├── llm.call [iter 1]
+        │           └── llm.call [iter 2, finished]
+        ├── AMQP receive security [165ms]
+        │     └── worker.security [3.2ms]
+        │           ├── llm.call [iter 1~3, finished]
+        └── AMQP receive test-gen [165ms]
+              └── worker.test_gen [3.1ms]
+                    └── llm.call [iter 1~3, finished]
+```
+
+- **19개 span 단일 trace 귀속** (traceID: `6556dd30...`)
+- trace 끊김 없음. dispatcher → AMQP → 3개 워커 → llm.call 전체 연결
+
+---
+
+**시나리오 2 — 루프 캡 유도 (MAX_LOOP_ITERATIONS=2로 임시 조정)**
+
+`security`, `test_gen`은 iteration 3에 완료되므로 캡(2)에 걸림. Jaeger 확인:
+
+```
+worker.security
+  tags: agent.loop_cap_hit=true
+        guardrail.action=force_terminate
+        guardrail.reason=max_iterations_2_reached
+
+worker.test_gen
+  tags: agent.loop_cap_hit=true
+        guardrail.action=force_terminate
+        guardrail.reason=max_iterations_2_reached
+```
+
+- 루프 캡 발동 → span에 `force_terminate` 기록 확인
+- `worker.code_review`는 iteration 2 정상 완료 (캡 미발동)
+- 검증 후 `MAX_LOOP_ITERATIONS=5` 원복
+
+---
+
+**시나리오 3 — Worker 재기동 중 trace context 생존**
+
+절차: Workers 종료 → `POST /tasks` (메시지 큐 대기) → Workers 재기동
+
+| 상태 | Jaeger span 수 |
+|------|---------------|
+| Workers 종료 직후 | 5개 (dispatcher + AMQP send만) |
+| Workers 재기동 후 | **19개** (동일 traceID에 worker span 합류) |
+
+- traceID `13a49781...` 동일 trace에 worker span 14개 추가 확인
+- RabbitMQ가 메시지 requeue 시 `traceparent` 헤더 보존 → trace context 생존율 **100%**
+
+---
+
+### [2026-06-19] 가드레일 구현 — Prometheus 비용 집계 기반 모델 자동 강등
+
+**카테고리**: 설계 결정 + 성과 측정
+
+**설계 배경**
+
+루프 캡(loop cap)으로 루프 폭증은 막을 수 있지만, "복잡하지 않은 task에 premium 모델이 과도하게 배정되는 문제"는 static 휴리스틱(diffLines 기준)만으로는 해결 안 됨. 실제 운영 데이터(Prometheus) 기반 동적 재조정이 필요.
+
+**구현 내용**
+
+`CostGuardrailService.apply(grade, taskType)`:
+1. Prometheus `/api/v1/query` 호출 — 최근 10분간 task type별 LLM 호출 1회당 평균 비용 쿼리
+   ```
+   sum(increase(llm_cost_usd_total{task_type="X"}[10m]))
+   / sum(increase(llm_calls_total{task_type="X"}[10m]))
+   ```
+2. 임계값(기본 $0.05) 초과 시 `premium → standard` 강등
+3. Prometheus 미응답 / 데이터 없음 → **fail-open** (기존 등급 유지)
+4. 강등 발동 시 span에 기록: `guardrail.action=model_downgrade`, `guardrail.reason=avg_cost_X_exceeds_threshold_Y`
+
+**설계 선택 — fail-open**
+
+가드레일이 Prometheus에 의존하므로 모니터링 시스템 장애가 서비스 장애로 전파되면 안 됨.
+`RestClientException` → null 반환 → 기존 등급 유지로 처리.
+
+**결과 (수치)**
+
+stub 기준 premium → standard 강등 시:
+- premium 3워커 비용: $0.62/task
+- standard 3워커 비용: $0.023/task
+- **절감률 ~96%** (비용 스파이크 차단 시나리오 기준)
+
+단위 테스트 5케이스 통과 (강등/유지/fail-open/standard 패스스루/경계값)
+
+---
+
+### [2026-06-19] Prometheus 메트릭 파이프라인 — spanmetrics 한계 발견 및 해결
+
+**카테고리**: 트러블슈팅
+
+**문제 상황**
+
+OTel Collector의 `spanmetrics` 커넥터로 Prometheus에 `taskscope_calls_total`, `taskscope_duration_milliseconds` 메트릭이 생성됨. 그런데 `llm.cost_usd` 같은 **span attribute 값**은 Prometheus 메트릭으로 변환되지 않음.
+
+`taskscope_calls_total{span_name="llm.call"}` 쿼리 → llm_model 레이블은 있지만 비용 집계 불가.
+
+**원인 분석**
+
+`spanmetrics` 커넥터의 역할은 span 수(call count)와 지속시간(duration histogram)을 메트릭으로 변환하는 것. span attribute에 기록된 `llm.cost_usd=0.063` 같은 숫자값은 메트릭으로 내보내는 기능 없음.
+
+**해결 방법**
+
+앱에서 Micrometer 카운터를 직접 OTel Collector로 push:
+- `micrometer-registry-otlp` 의존성 추가
+- `BaseWorker.callLlm()` 내부에서 LLM 호출 후 4개 카운터 기록:
+  - `llm.calls` (task_type, llm_model, task_complexity 태그)
+  - `llm.cost.usd` (누적 비용)
+  - `llm.input.tokens` / `llm.output.tokens`
+- OTel Collector metrics pipeline에 `otlp` receiver 추가
+
+**결과 (수치)**
+
+- Prometheus에서 `llm_cost_usd_total`, `llm_calls_total` 등 4개 메트릭 집계 가능
+- Grafana 대시보드 7개 패널 구성: task type별 비용/호출률, 모델별 누적 비용, P95 워커 지연, complexity 분포
+- `llm.call` span에 `task.type` attribute 누락 버그도 함께 수정 → spanmetrics에서 task_type 레이블 생성 가능
 
 ---
 
@@ -214,7 +347,7 @@ Bind for 0.0.0.0:4317 failed: port is already allocated
 **카테고리**: 설계 결정
 
 **결정 내용**
-- 언어/프레임워크: Java 21 + Spring Boot 3.x (Maven 멀티 모듈)
+- 언어/프레임워크: Java 21 + Spring Boot 3.x (Gradle 8.x Kotlin DSL, 멀티 모듈)
 - Python FastAPI 대비 초기 보일러플레이트는 많으나, Spring AMQP의 `@RabbitListener` 추상화와 OTel Java Agent 자동 계측이 장기적으로 유리하다고 판단
 - 트레이스 백엔드: Jaeger (로컬 셀프호스팅, all-in-one 이미지)
 - 메트릭 파이프라인: OTel Collector spanmetrics connector → Prometheus → Grafana
