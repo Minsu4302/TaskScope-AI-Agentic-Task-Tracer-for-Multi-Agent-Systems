@@ -30,6 +30,7 @@ management:
 
 anthropic:
   api-key: ${ANTHROPIC_API_KEY:}
+  max-tokens: ${LLM_MAX_TOKENS:4096}
 
 github:
   token: ${GITHUB_TOKEN:}

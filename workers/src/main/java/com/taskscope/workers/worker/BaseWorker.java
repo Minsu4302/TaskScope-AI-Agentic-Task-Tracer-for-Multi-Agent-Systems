@@ -26,7 +26,8 @@ public abstract class BaseWorker {
     private static final Logger log = LoggerFactory.getLogger(BaseWorker.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-    private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
+    // greedy *: 내부 코드블록(```java...```)이 있어도 마지막 ``` 까지 캡처
+    private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("```(?:json)?\\s*([\\s\\S]*)```");
 
     private static final double HAIKU_INPUT_COST  = 1.0;
     private static final double HAIKU_OUTPUT_COST = 5.0;
