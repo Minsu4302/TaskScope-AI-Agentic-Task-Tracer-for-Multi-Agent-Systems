@@ -178,14 +178,24 @@ public abstract class BaseWorker {
                 .map(com.anthropic.models.messages.TextBlock::text)
                 .collect(java.util.stream.Collectors.joining());
 
+        // max_tokens로 출력이 잘린 경우 → retry (JSON이 완성될 수 없음)
+        boolean truncated = response.stopReason()
+                .map(r -> "max_tokens".equals(r.toString()))
+                .orElse(false);
+        if (truncated) {
+            log.warn("[{}] Output truncated by max_tokens, will retry", spanName());
+            return new LlmResponse("retry", "output_truncated_by_max_tokens", "", null);
+        }
+
         try {
             String json = extractJson(text);
             LlmResponse parsed = OBJECT_MAPPER.readValue(json, LlmResponse.class);
             if (parsed.status() == null) return LlmResponse.parseError(text);
             return parsed;
         } catch (Exception e) {
-            log.warn("[{}] JSON parse failed, treating as complete: {}", spanName(), e.getMessage());
-            return LlmResponse.parseError(text);
+            // JSON 파싱 실패 = 불완전한 응답 → retry (complete 처리 방지)
+            log.warn("[{}] JSON parse failed, will retry: {}", spanName(), e.getMessage());
+            return new LlmResponse("retry", "json_parse_error", "", null);
         }
     }
 
