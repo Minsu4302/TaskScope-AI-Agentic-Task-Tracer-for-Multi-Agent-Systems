@@ -127,8 +127,9 @@ public abstract class BaseWorker {
         int outputTokens = (int) response.usage().outputTokens();
         double costUsd   = calculateCost(model, inputTokens, outputTokens);
 
-        log.info("[{}] task={} model={} in={} out={} cost=${:.6f}",
-                spanName(), message.taskId(), model, inputTokens, outputTokens, costUsd);
+        log.info("[{}] task={} model={} in={} out={} cost=${}",
+                spanName(), message.taskId(), model, inputTokens, outputTokens,
+                String.format("%.6f", costUsd));
 
         return new LlmResult(inputTokens, outputTokens, costUsd, true);  // Phase 2: 단일 호출 후 완료
     }
