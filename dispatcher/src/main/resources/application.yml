@@ -33,3 +33,9 @@ taskscope:
   guardrail:
     prometheus-url: ${PROMETHEUS_URL:http://localhost:19090}
     cost-threshold-usd: ${GUARDRAIL_COST_THRESHOLD_USD:0.05}
+
+github:
+  token: ${GITHUB_TOKEN:}
+
+task:
+  unit: ${TASK_UNIT:single_commit}   # "single_commit" | "commit_group"

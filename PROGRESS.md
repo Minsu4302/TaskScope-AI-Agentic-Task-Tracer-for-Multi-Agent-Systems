@@ -45,6 +45,88 @@
 
 ---
 
+### [2026-06-19] Prometheus PromQL 쿼리 파싱 에러 — RestClient URL 이중 인코딩
+
+**카테고리**: 트러블슈팅
+
+**문제 상황**
+
+`CostGuardrailService`가 Prometheus에 PromQL 쿼리를 보낼 때 400 에러 반복 발생:
+```
+bad number or duration syntax: "28"
+parse error at 1:5
+```
+기능은 fail-open이라 서비스 중단은 없었으나 task당 15번씩 WARN 로그 폭발.
+
+**원인 분석**
+
+기존 코드: `URLEncoder.encode(query, UTF_8)`로 수동 인코딩 후 문자열 연결로 URI 구성:
+```java
+.uri("/api/v1/query?query=" + URLEncoder.encode(query, StandardCharsets.UTF_8))
+```
+`sum(`의 `(`는 `%28`로 인코딩됨. 그런데 Spring `RestClient.uri(String)` 메서드가 내부적으로 URL을 다시 파싱할 때 `%`를 `%25`로 재인코딩 → Prometheus가 받는 쿼리: `sum%28increase%28...` (URL 디코딩 전 상태). Prometheus PromQL 파서가 `sum%`를 보고 `%28`의 `28`을 잘못된 숫자 토큰으로 해석 → parse error.
+
+**해결 방법 (2단계)**
+
+1차 시도 — `uri(b -> b.path(...).queryParam("query", query).build())`:
+PromQL 쿼리 값 안에 `{task_type="code_review"}` 중괄호가 있어, Spring이 이를 URI 템플릿 변수 `{task_type}`으로 오해하고 `build()` 시 `IllegalArgumentException` 발생 → 500으로 터짐 (RestClientException이 아니라 catch 우회).
+
+최종 수정 — 쿼리 값을 명시적 템플릿 변수 `{q}`로 분리:
+```java
+.uri(b -> b.path("/api/v1/query")
+           .queryParam("query", "{q}")
+           .build(Map.of("q", query)))
+```
+Spring이 `{q}`를 실제 query 문자열로 치환하면서 RFC 3986 인코딩 적용 → `{task_type}`는 값으로 취급되어 `%7Btask_type%3D...`로 안전하게 인코딩됨.
+catch 블록도 `Exception`으로 확장해 URI 빌더 예외도 fail-open 처리.
+
+**결과 (수치)**
+
+- 수정 전: task당 15회 WARN 로그 (400 Bad Request), 잘못된 1차 수정 시 500 폭발
+- 수정 후: Prometheus WARN 로그 0건, Prometheus 데이터 없을 때 null 반환(fail-open) 정상 동작
+- 두 repo 30개 커밋 fetch → SMALL=3/MEDIUM=2/LARGE=1 샘플링 → 18 LLM task dispatch 확인
+
+---
+
+### [2026-06-19] GitHub API rate limit — 비인증 호출 즉시 차단
+
+**카테고리**: 트러블슈팅
+
+**문제 상황**
+
+`GitHubClient` 초기 구현 시 PAT 없이 GitHub REST API(`GET /repos/{owner}/{repo}/commits`) 호출 테스트:
+```
+HTTP 403 Forbidden
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1750330412
+message: "API rate limit exceeded for <IP>. ..."
+```
+두 repo에서 각 15개 커밋 상세 조회(listCommits 1 + getCommit 15 = 16 req/repo × 2 = 32 req) 시도 시 비인증 60 req/h 제한에 즉시 도달.
+
+**원인 분석**
+
+GitHub REST API의 비인증 rate limit은 IP당 **시간당 60 요청**. CommitSampler가 원하는 최소 커밋 수(각 repo 15개 × 상세 조회)만으로도 30 req/h를 소비 — 2번 실행하면 즉시 소진. 개발/테스트 반복 상황에서 사실상 사용 불가.
+
+**해결 방법**
+
+GitHub PAT(Personal Access Token) 발급 — public repo 읽기 권한(`public_repo` scope)만으로 충분. `.env`에 `GITHUB_TOKEN`으로 관리, `GitHubClient` 생성자에서 `"Bearer " + token` 헤더 주입:
+```java
+this.restClient = RestClient.builder()
+    .defaultHeader("Authorization", "Bearer " + token)
+    .defaultHeader("X-GitHub-Api-Version", "2022-11-28")
+    .build();
+```
+`.env.example`에 `GITHUB_TOKEN=ghp_your_token_here` 추가, `.env` 자체는 `.gitignore`로 커밋 제외.
+
+**결과 (수치)**
+
+- PAT 인증 후 rate limit: **5,000 req/h** (비인증 대비 83배)
+- 두 repo 각 15개 커밋 상세 조회 = 32 API 호출 → 제한의 0.64% 소비
+- 하루 종일 반복 테스트해도 제한 도달 불가 (5000 / 32 = 156회 실행 가능/h)
+
+---
+
 ### [2026-06-19] End-to-end 검증 — 3개 시나리오 실측
 
 **카테고리**: 성과 측정

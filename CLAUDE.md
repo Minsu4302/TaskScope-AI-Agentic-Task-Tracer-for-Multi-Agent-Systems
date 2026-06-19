@@ -12,7 +12,7 @@
 기존 멀티 에이전트 시스템(하네스)을 운영하면서 Langfuse로 "어떤 에이전트가 비용을 썼는지"는 알 수 있었지만, "어떤 작업에서 비용이 급증했는지, 왜 급증했는지"는 로그를 전부 뒤져야 알 수 있어 사실상 불가능했음. 또한 토큰 절감과 추론 능력, 모델 성능과 비용 사이의 트레이드오프 문제도 함께 겪음.
 
 ### 메인 목표
-1. PR(작업)을 루트 span으로 하는 분산 트레이스 — 작업 단위 drill-down 가능하게
+1. 커밋(또는 커밋 그룹)을 루트 span으로 하는 분산 트레이스 — 작업 단위 drill-down 가능하게
 2. 메시지 큐(RabbitMQ) 기반 비동기 워커 + OTel trace context propagation
 3. OTel Collector → Prometheus(집계) + Grafana(대시보드) 파이프라인
 
@@ -22,7 +22,10 @@
 
 ## 아키텍처 원칙
 
-- task(PR) = trace의 루트. 모든 워커 호출은 이 루트 아래 child span으로 귀속되어야 함.
+- task(커밋 또는 커밋 그룹) = trace의 루트. 모든 워커 호출은 이 루트 아래 child span으로 귀속되어야 함.
+  - `task.unit=single_commit`: 커밋 1개 = task 1개
+  - `task.unit=commit_group`: 연속된 커밋 N개를 하나의 task로 묶어 분석
+  - 두 모드 모두 GitHub REST API(`GET /repos/{owner}/{repo}/commits/{sha}`)로 실제 diff를 가져와 task의 입력으로 사용
 - 모든 LLM 호출 span에는 최소한 다음 attribute를 기록: `task.id`, `task.type`, `llm.model`, `llm.input_tokens`, `llm.output_tokens`, `llm.cost_usd`, `agent.loop_iteration`
 - 메시지 큐 메시지 헤더에 trace context(traceparent)를 반드시 실어서 워커 간 전파. 이게 끊기면 트레이스가 끊긴 것으로 간주하고 버그로 취급.
 - 비용 집계(Prometheus)와 트레이스 drill-down(Jaeger/Langfuse)은 역할을 분리. Prometheus에 트레이스 트리 전체를 넣으려 하지 말 것.
