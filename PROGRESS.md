@@ -33,7 +33,7 @@
 
 | 항목 | Before | After | 비고 |
 |---|---|---|---|
-| task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | 정상 $0.62, 가드레일 강등 시 $0.023 | stub 기준. 강등 시 ~96% 절감 |
+| task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | LARGE $0.217, MEDIUM $0.020, SMALL $0.012 (실측) | Phase 2 단일 호출 기준. 가드레일 강등(premium→standard) 시 ~91% 절감 |
 | task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회, 정상 평균 2.67회/워커 | 루프 캡 가드레일 |
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
@@ -42,6 +42,52 @@
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-19] Phase 2 — 실제 Claude API 연동 및 실측 비용 데이터 수집
+
+**카테고리**: 성과 측정
+
+**구현 내용**
+
+- Anthropic Java SDK(`com.anthropic:anthropic-java:2.34.0`) 도입
+- `AnthropicLlmClient`: Spring `@Value("${anthropic.api-key}")` 우선, 비어 있으면 `ANTHROPIC_API_KEY` 환경변수 자동 폴백
+- `BaseWorker.invokeLlm()` 구체 구현: systemPrompt(추상) + diff 기반 user message → 단일 Claude 호출, finished=true
+- 모델 라우팅 수정: `standard → claude-haiku-4-5`, `premium → claude-sonnet-4-6`
+- 워커별 system prompt: code-review(코드품질/버그/컨벤션), security(하드코딩 시크릿/인젝션 취약점), test-gen(JUnit 5 테스트 케이스 제안)
+
+**트러블슈팅 — ANTHROPIC_API_KEY 전달 실패**
+
+workers 기동 후 API 호출마다 `401: x-api-key header is required` 반복 발생.
+
+원인: `ANTHROPIC_API_KEY` 환경변수를 다른 PowerShell 세션에서 설정했거나 `$env:` 범위로만 설정 → Gradle 데몬 프로세스는 데몬 기동 시점의 환경을 상속하므로 나중에 설정한 env var를 인식 못함 (GITHUB_TOKEN 때와 동일한 패턴).
+
+해결: `workers/src/main/resources/application-local.yml`(gitignore)에 키를 직접 기재, `SPRING_PROFILES_ACTIVE=local`로 기동 → `[anthropic] client initialized (apiKey from config)` 로그 확인.
+
+**실측 비용 데이터 (Phase 2, 단일 호출 기준)**
+
+| 커밋 크기 | 모델 | 워커 | Input 토큰 | Output 토큰 | 호출당 비용 |
+|---|---|---|---|---|---|
+| LARGE | claude-sonnet-4-6 | test_gen | 19,004 | 1,024 | $0.0724 |
+| LARGE | claude-sonnet-4-6 | security | 19,025 | 1,024 | $0.0724 |
+| SMALL | claude-haiku-4-5 | code_review | 645 | 534 | $0.0033 |
+| SMALL | claude-haiku-4-5 | code_review | 269 | 207 | $0.0013 |
+| SMALL | claude-haiku-4-5 | security | 658 | 503 | $0.0032 |
+| MEDIUM | claude-haiku-4-5 | code_review | 1,875 | 1,024 | $0.0070 |
+| MEDIUM | claude-haiku-4-5 | test_gen | 1,610 | 1,024 | $0.0067 |
+| MEDIUM | claude-haiku-4-5 | security | 1,631 | 1,023 | $0.0067 |
+
+**결과 (수치)**
+
+단일 task 기준 Phase 2 실측 비용 (3 워커 합산):
+- LARGE 커밋 (premium/Sonnet): ~**$0.217/task** (test_gen $0.072 + security $0.072 + code_review ~$0.073)
+- MEDIUM 커밋 (standard/Haiku): ~**$0.020/task** (3 워커 합산)
+- SMALL 커밋 (standard/Haiku): ~**$0.012/task** (3 워커 합산)
+
+Phase 1 stub 대비 premium 모델 실측이 약 35% 저렴 (stub: $0.62, 실측 단일호출: $0.217). stub은 멀티 루프(2~3회) 가정이었고, Phase 2는 단일 호출이므로 loop 도입 후 비교 필요.
+
+Phase 3(루프 로직 도입) 후 반복 횟수 실측하면 stub 가정치와 직접 비교 가능.
 
 ---
 

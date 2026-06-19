@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
 import com.taskscope.workers.config.RabbitMQConfig;
+import com.taskscope.workers.llm.AnthropicLlmClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Tracer;
 import org.slf4j.Logger;
@@ -14,8 +15,8 @@ public class CodeReviewWorker extends BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(CodeReviewWorker.class);
 
-    public CodeReviewWorker(Tracer tracer, MeterRegistry meterRegistry) {
-        super(tracer, meterRegistry);
+    public CodeReviewWorker(Tracer tracer, MeterRegistry meterRegistry, AnthropicLlmClient anthropicLlmClient) {
+        super(tracer, meterRegistry, anthropicLlmClient);
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_CODE_REVIEW)
@@ -30,11 +31,19 @@ public class CodeReviewWorker extends BaseWorker {
     }
 
     @Override
-    protected LlmResult invokeLlm(TaskMessage message, int iteration) {
-        // stub: 2회 반복 후 완료 (코드리뷰는 보통 1~2회 루프)
-        boolean done = iteration >= 2;
-        return "premium".equals(message.modelGrade())
-                ? new LlmResult(1800, 480, 0.0630, done)   // Opus
-                : new LlmResult(1500, 320, 0.0021, done);  // Haiku
+    protected String systemPrompt() {
+        return """
+                You are a code review expert. Analyze the provided git diff for code quality, \
+                potential bugs, and adherence to best practices.
+
+                Review the diff for:
+                1. Logic errors or bugs
+                2. Code style and convention violations
+                3. Security vulnerabilities
+                4. Performance concerns
+                5. Missing error handling
+
+                Provide a concise review with specific line references and actionable feedback. \
+                Be direct and prioritize the most impactful issues.""";
     }
 }

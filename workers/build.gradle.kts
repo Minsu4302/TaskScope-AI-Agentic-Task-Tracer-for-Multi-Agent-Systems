@@ -16,6 +16,8 @@ dependencies {
     implementation("io.opentelemetry:opentelemetry-exporter-otlp")
     // Micrometer OTLP 메트릭 익스포터 — LLM 비용/토큰 메트릭을 OTel Collector로 전송
     implementation("io.micrometer:micrometer-registry-otlp")
+    // Anthropic Java SDK — 실제 Claude API 호출
+    implementation("com.anthropic:anthropic-java:2.34.0")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

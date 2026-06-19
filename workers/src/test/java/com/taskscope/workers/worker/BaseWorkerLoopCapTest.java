@@ -55,6 +55,7 @@ class BaseWorkerLoopCapTest {
     private BaseWorker neverFinishingWorker(AtomicInteger counter) {
         return new BaseWorker(NOOP_TRACER, METER_REGISTRY) {
             @Override protected String spanName() { return "test.never"; }
+            @Override protected String systemPrompt() { return ""; }
             @Override protected LlmResult invokeLlm(TaskMessage msg, int iteration) {
                 counter.incrementAndGet();
                 return new LlmResult(100, 50, 0.001, false);
@@ -65,6 +66,7 @@ class BaseWorkerLoopCapTest {
     private BaseWorker finishesAtIterationWorker(AtomicInteger counter, int finishAt) {
         return new BaseWorker(NOOP_TRACER, METER_REGISTRY) {
             @Override protected String spanName() { return "test.early"; }
+            @Override protected String systemPrompt() { return ""; }
             @Override protected LlmResult invokeLlm(TaskMessage msg, int iteration) {
                 counter.incrementAndGet();
                 return new LlmResult(100, 50, 0.001, iteration >= finishAt);

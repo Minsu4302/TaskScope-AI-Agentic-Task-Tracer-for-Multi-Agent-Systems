@@ -1,7 +1,9 @@
 package com.taskscope.workers.worker;
 
+import com.anthropic.models.messages.Message;
 import com.taskscope.shared.SpanAttributes;
 import com.taskscope.shared.TaskMessage;
+import com.taskscope.workers.llm.AnthropicLlmClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
@@ -15,12 +17,26 @@ public abstract class BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(BaseWorker.class);
 
+    // 비용: $/MTok — Haiku 4.5, Sonnet 4.6
+    private static final double HAIKU_INPUT_COST  = 1.0;
+    private static final double HAIKU_OUTPUT_COST = 5.0;
+    private static final double SONNET_INPUT_COST  = 3.0;
+    private static final double SONNET_OUTPUT_COST = 15.0;
+
     private final Tracer tracer;
     private final MeterRegistry meterRegistry;
+    private final AnthropicLlmClient anthropicLlmClient;
 
-    protected BaseWorker(Tracer tracer, MeterRegistry meterRegistry) {
+    /** Spring DI 생성자 */
+    protected BaseWorker(Tracer tracer, MeterRegistry meterRegistry, AnthropicLlmClient anthropicLlmClient) {
         this.tracer = tracer;
         this.meterRegistry = meterRegistry;
+        this.anthropicLlmClient = anthropicLlmClient;
+    }
+
+    /** 테스트용 생성자 — invokeLlm()을 오버라이드하는 서브클래스에서만 사용 */
+    protected BaseWorker(Tracer tracer, MeterRegistry meterRegistry) {
+        this(tracer, meterRegistry, null);
     }
 
     protected void process(TaskMessage message) {
@@ -30,6 +46,8 @@ public abstract class BaseWorker {
                 .setAttribute(SpanAttributes.TASK_ID, message.taskId())
                 .setAttribute(SpanAttributes.TASK_TYPE, message.taskType())
                 .setAttribute(SpanAttributes.LLM_MODEL, model)
+                .setAttribute(SpanAttributes.COMMIT_SHA, message.commitSha())
+                .setAttribute(SpanAttributes.TASK_UNIT, message.taskUnit())
                 .startSpan();
 
         try (Scope ignored = workerSpan.makeCurrent()) {
@@ -60,7 +78,7 @@ public abstract class BaseWorker {
     private LlmResult callLlm(TaskMessage message, int iteration, String model) {
         Span llmSpan = tracer.spanBuilder("llm.call")
                 .setAttribute(SpanAttributes.TASK_ID, message.taskId())
-                .setAttribute(SpanAttributes.TASK_TYPE, message.taskType())   // spanmetrics 레이블용
+                .setAttribute(SpanAttributes.TASK_TYPE, message.taskType())
                 .setAttribute(SpanAttributes.LLM_MODEL, model)
                 .setAttribute(SpanAttributes.AGENT_LOOP_ITERATION, iteration)
                 .startSpan();
@@ -71,7 +89,6 @@ public abstract class BaseWorker {
             llmSpan.setAttribute(SpanAttributes.LLM_OUTPUT_TOKENS, result.outputTokens());
             llmSpan.setAttribute(SpanAttributes.LLM_COST_USD, result.costUsd());
 
-            // Micrometer 카운터 — Prometheus에서 집계 가능한 비용/토큰 메트릭
             String taskType = message.taskType();
             meterRegistry.counter("llm.calls",
                     "task_type", taskType, "llm_model", model, "task_complexity", message.modelGrade()
@@ -94,10 +111,57 @@ public abstract class BaseWorker {
 
     protected abstract String spanName();
 
-    protected abstract LlmResult invokeLlm(TaskMessage message, int iteration);
+    protected abstract String systemPrompt();
 
-    private String resolveModel(String modelGrade) {
-        return "premium".equals(modelGrade) ? "claude-opus-4-8" : "claude-haiku-4-5-20251001";
+    /**
+     * 실제 Claude API 호출. Phase 2에서는 항상 finished=true.
+     * 테스트 서브클래스는 이 메서드를 오버라이드해 stub 반환 가능.
+     */
+    protected LlmResult invokeLlm(TaskMessage message, int iteration) {
+        String model = resolveModel(message.modelGrade());
+        String userMessage = buildUserMessage(message);
+
+        Message response = anthropicLlmClient.call(model, systemPrompt(), userMessage);
+
+        int inputTokens  = (int) response.usage().inputTokens();
+        int outputTokens = (int) response.usage().outputTokens();
+        double costUsd   = calculateCost(model, inputTokens, outputTokens);
+
+        log.info("[{}] task={} model={} in={} out={} cost=${}",
+                spanName(), message.taskId(), model, inputTokens, outputTokens,
+                String.format("%.6f", costUsd));
+
+        return new LlmResult(inputTokens, outputTokens, costUsd, true);  // Phase 2: 단일 호출 후 완료
+    }
+
+    private String buildUserMessage(TaskMessage message) {
+        String diff = message.commitDiff() == null || message.commitDiff().isBlank()
+                ? "(diff 없음)"
+                : message.commitDiff();
+        return """
+                Task ID   : %s
+                Task Type : %s
+                Repository: %s
+                Commit SHA: %s
+                Diff Lines: %d
+
+                --- DIFF ---
+                %s
+                """.formatted(
+                message.taskId(), message.taskType(), message.repoUrl(),
+                message.commitSha(), message.diffLines(), diff);
+    }
+
+    private double calculateCost(String model, int inputTokens, int outputTokens) {
+        boolean isHaiku = model.contains("haiku");
+        double inputPrice  = isHaiku ? HAIKU_INPUT_COST  : SONNET_INPUT_COST;
+        double outputPrice = isHaiku ? HAIKU_OUTPUT_COST : SONNET_OUTPUT_COST;
+        return (inputTokens / 1_000_000.0 * inputPrice)
+             + (outputTokens / 1_000_000.0 * outputPrice);
+    }
+
+    protected String resolveModel(String modelGrade) {
+        return "premium".equals(modelGrade) ? "claude-sonnet-4-6" : "claude-haiku-4-5";
     }
 
     protected record LlmResult(int inputTokens, int outputTokens, double costUsd, boolean finished) {}

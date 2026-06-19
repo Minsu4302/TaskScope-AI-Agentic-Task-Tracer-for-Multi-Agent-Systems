@@ -25,3 +25,6 @@ management:
     web:
       exposure:
         include: health,info,metrics
+
+anthropic:
+  api-key: ${ANTHROPIC_API_KEY:}
