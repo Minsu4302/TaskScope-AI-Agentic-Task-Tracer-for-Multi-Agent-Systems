@@ -45,6 +45,59 @@
 
 ---
 
+### [2026-06-19] 실제 API 비용 급증 원인 분석 — 구 worker 프로세스 누수
+
+**카테고리**: 트러블슈팅 + 운영 교훈
+
+**문제 상황**
+
+오늘 실측 기록상 측정된 LLM 호출 비용은 $0.3~0.4 수준이었으나 실제 청구액은 약 $5. 측정값의 10~15배.
+
+**원인 분석**
+
+RabbitMQ 통계에서 핵심 단서 발견:
+```
+code-review queue: publish=55, deliver=358, redeliver=303  ← 재소비 비율 6.5×
+security queue:    publish=24, deliver=323, redeliver=299
+test-gen queue:    publish=24, deliver=312, redeliver=288
+```
+
+원인 1 (주요): **이전 세션의 Java worker 프로세스 13개가 살아있는 채로 API key 포함 환경변수를 상속해 RabbitMQ consumer로 계속 붙어 있었음.**
+- `consumers: 4`가 각 큐에 동시 접속 (정상: 1)
+- Spring AMQP 기본 동작: `@RabbitListener` 에서 예외 발생 → 메시지 requeue → 다른 worker가 동일 메시지 수신 → 또 LLM 호출
+- 55개 task × 6.5배 재시도 × 평균 $0.007 ≈ **$2.5** (이것만으로)
+
+원인 2: **test_gen LARGE Sonnet loop cap 반복** — $0.083 × 5 = $0.415/회. 디버깅 중 여러 번 발생.
+
+원인 3: **need_context → retry×4 패턴** — $0.073/회, 같은 스크립트 커밋을 여러 번 dispatch.
+
+**해결 방법**
+
+실험 세션 시작 전 체크리스트:
+1. `Get-Process java | Stop-Process -Force` — 이전 세션 프로세스 전수 정리
+2. RabbitMQ Management(`localhost:15672`) → 큐 consumers 수 확인 (각 큐 1개여야 정상)
+3. 새 worker 기동 후 로그에서 `maxTokens=`, `client initialized` 확인 후 dispatch
+
+**결과 (수치)**
+
+- 측정된 비용: $0.3~0.4
+- 실제 청구: ~$5
+- 갭 원인: 구 worker 프로세스 누수로 인한 메시지 6.5× 재소비
+- 이후: 프로세스 정리 후 단일 consumer 확인 → 예상 범위 내 비용 통제 가능
+
+**향후 비용 추정 (잔여 작업)**
+
+| 단계 | 내용 | 예상 비용 |
+|---|---|---|
+| Phase 5: 복잡도 분류 고도화 | 10~20개 커밋 샘플, 거의 Haiku | $0.5~1.0 |
+| Phase 6: 강등 전/후 품질 비교 | 5~8개 커밋 × 2모델 | $0.3~0.6 |
+| test_gen LARGE 문제 해결 검증 | Sonnet 5~10회 | $0.2~0.4 |
+| **합계** | | **$1.0~2.0** |
+
+비용 절감 원칙: Sonnet은 LARGE 비교 포인트(1~2개)에만. 샘플은 "패턴을 보여줄 수 있는 최소 수"로.
+
+---
+
 ### [2026-06-19] maxTokens 2048→4096 조정 + lazy regex 버그 수정 — Before/After 재실측
 
 **카테고리**: 트러블슈팅 (원인 분석 → 가설 수정 → 검증)
