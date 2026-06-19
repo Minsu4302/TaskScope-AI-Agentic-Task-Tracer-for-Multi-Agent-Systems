@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
 import com.taskscope.workers.config.RabbitMQConfig;
+import com.taskscope.workers.github.GitHubFileClient;
 import com.taskscope.workers.llm.AnthropicLlmClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Tracer;
@@ -15,8 +16,9 @@ public class CodeReviewWorker extends BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(CodeReviewWorker.class);
 
-    public CodeReviewWorker(Tracer tracer, MeterRegistry meterRegistry, AnthropicLlmClient anthropicLlmClient) {
-        super(tracer, meterRegistry, anthropicLlmClient);
+    public CodeReviewWorker(Tracer tracer, MeterRegistry meterRegistry,
+                            AnthropicLlmClient anthropicLlmClient, GitHubFileClient gitHubFileClient) {
+        super(tracer, meterRegistry, anthropicLlmClient, gitHubFileClient);
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_CODE_REVIEW)
@@ -33,17 +35,28 @@ public class CodeReviewWorker extends BaseWorker {
     @Override
     protected String systemPrompt() {
         return """
-                You are a code review expert. Analyze the provided git diff for code quality, \
-                potential bugs, and adherence to best practices.
+                You are a code review expert. Analyze the provided git diff for quality and correctness.
 
-                Review the diff for:
+                IMPORTANT: You MUST respond with ONLY valid JSON in this exact format (no other text):
+                {
+                  "status": "complete",
+                  "reasoning": "brief explanation of your decision",
+                  "result": "your full review here",
+                  "context_request": null
+                }
+
+                Status rules:
+                - "complete": you have enough information to provide a full review
+                - "need_context": you need to see specific files to give a proper review; set context_request.files to an array of file paths
+                - "retry": your analysis was incomplete or cut off; explain in reasoning
+
+                Review focus:
                 1. Logic errors or bugs
                 2. Code style and convention violations
                 3. Security vulnerabilities
                 4. Performance concerns
                 5. Missing error handling
 
-                Provide a concise review with specific line references and actionable feedback. \
-                Be direct and prioritize the most impactful issues.""";
+                Provide specific line references and actionable feedback in "result".""";
     }
 }

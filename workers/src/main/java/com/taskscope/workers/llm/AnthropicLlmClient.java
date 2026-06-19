@@ -34,7 +34,7 @@ public class AnthropicLlmClient {
     public Message call(String model, String systemPrompt, String userMessage) {
         MessageCreateParams params = MessageCreateParams.builder()
                 .model(model)
-                .maxTokens(1024L)
+                .maxTokens(2048L)
                 .system(systemPrompt)
                 .addUserMessage(userMessage)
                 .build();

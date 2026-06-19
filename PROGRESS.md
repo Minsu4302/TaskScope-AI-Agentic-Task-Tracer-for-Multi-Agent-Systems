@@ -34,7 +34,7 @@
 | 항목 | Before | After | 비고 |
 |---|---|---|---|
 | task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | LARGE $0.217, MEDIUM $0.020, SMALL $0.012 (실측) | Phase 2 단일 호출 기준. 가드레일 강등(premium→standard) 시 ~91% 절감 |
-| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회, 정상 평균 2.67회/워커 | 루프 캡 가드레일 |
+| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회 (캡), 실측 평균 1.0회 (SMALL/MEDIUM 커밋) | Phase 3 실측. LARGE 커밋에서 need_context 발동 시 증가 예상 |
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
 | Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
@@ -42,6 +42,54 @@
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-19] Phase 3 — LLM 판단 기반 루프 + JSON 잘림 문제 해결
+
+**카테고리**: 트러블슈팅 + 성과 측정
+
+**구현 내용**
+
+- `LlmResponse`: Claude JSON 응답 파싱 (`status: complete|need_context|retry`)
+- `GitHubFileClient`: `need_context` 발동 시 GitHub Contents API로 파일 실시간 fetch (최대 3개)
+- `BaseWorker`: ThreadLocal로 iteration 간 extraContext 전달, `agent.loop_reason` span attribute 기록
+- 워커별 system prompt: JSON 응답 형식 강제 + status 판단 기준 명시
+
+**트러블슈팅 — JSON 잘림 문제**
+
+Phase 3 첫 테스트에서 MEDIUM 커밋(in=2348) 처리 시 JSON parse 실패:
+```
+JSON parse failed, treating as complete: Unexpected end-of-input: was expecting closing quote
+at line: 4, column: 1267
+```
+`out=728` 토큰인데 JSON의 `result` 문자열 필드 중간에서 종료. maxTokens=1024 제한 + Claude의 상세 리뷰 시도로 JSON 구조가 완성되지 못한 채 잘림.
+
+기존 `parseError` 처리는 잘린 응답을 `complete`로 처리 → 불완전한 리뷰 결과 반환.
+
+**해결 방법 (2가지)**
+
+1. `maxTokens 1024 → 2048`: 출력 예산 확대로 JSON이 완성될 가능성 증가
+2. `parseResponse()` 수정:
+   - `stopReason == "max_tokens"` → `retry` 반환 (출력 잘림 명시적 감지)
+   - JSON parse 예외 → `retry` 반환 (이전: `complete` fallback, 불완전 결과 누출 방지)
+
+이후 재시도 시 LLM이 동일 diff에 대해 더 간결한 JSON을 생성해 완료.
+
+**실측 루프 횟수 데이터 (Phase 3)**
+
+| 커밋 크기 | 모델 | Input | Output | 이터레이션 | status |
+|---|---|---|---|---|---|
+| SMALL | claude-haiku-4-5 | 526 | 498 | 1 | complete |
+| MEDIUM | claude-haiku-4-5 | 2,344 | 697 | 1 | complete |
+| SMALL | claude-haiku-4-5 | 530 | 387 | 1 | complete |
+
+**결과 (수치)**
+
+- Phase 3 실측 평균 루프 횟수: **1.0회** (현재까지 `need_context`/`retry` 미발동 케이스)
+- `maxTokens` 증가 효과: MEDIUM 커밋(2348 input) JSON 완성 성공 (이전 728토큰 잘림 → 697토큰 완성)
+- `retry` 분기 동작 확인: `max_tokens` stopReason + JSON parse 실패 모두 감지 가능
+- Phase 2 stub 대비 Phase 3 실측: **루프 캡 없이 1회로 완료** (stub은 2~3회 가정이었음)
 
 ---
 
