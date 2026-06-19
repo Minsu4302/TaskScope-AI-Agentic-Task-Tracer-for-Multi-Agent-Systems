@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
 import com.taskscope.workers.config.RabbitMQConfig;
+import com.taskscope.workers.llm.AnthropicLlmClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Tracer;
 import org.slf4j.Logger;
@@ -14,8 +15,8 @@ public class SecurityWorker extends BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityWorker.class);
 
-    public SecurityWorker(Tracer tracer, MeterRegistry meterRegistry) {
-        super(tracer, meterRegistry);
+    public SecurityWorker(Tracer tracer, MeterRegistry meterRegistry, AnthropicLlmClient anthropicLlmClient) {
+        super(tracer, meterRegistry, anthropicLlmClient);
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_SECURITY)
@@ -30,11 +31,19 @@ public class SecurityWorker extends BaseWorker {
     }
 
     @Override
-    protected LlmResult invokeLlm(TaskMessage message, int iteration) {
-        // stub: 보안 분석은 취약점 재확인 포함 2~3회 루프
-        boolean done = iteration >= 3;
-        return "premium".equals(message.modelGrade())
-                ? new LlmResult(2100, 560, 0.0735, done)
-                : new LlmResult(1700, 380, 0.0029, done);
+    protected String systemPrompt() {
+        return """
+                You are a security analysis expert specializing in code vulnerability detection.
+
+                Analyze the provided git diff for:
+                1. Hardcoded secrets, tokens, passwords, or API keys
+                2. SQL injection vulnerabilities
+                3. Command injection risks
+                4. Authentication and authorization flaws
+                5. Insecure cryptographic practices
+                6. Sensitive data exposure
+
+                For each finding report: severity (CRITICAL/HIGH/MEDIUM/LOW), \
+                exact location, and recommended fix. If no issues found, state that explicitly.""";
     }
 }
