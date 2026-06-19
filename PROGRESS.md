@@ -34,7 +34,7 @@
 | 항목 | Before | After | 비고 |
 |---|---|---|---|
 | task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | LARGE $0.217, MEDIUM $0.020, SMALL $0.012 (실측) | Phase 2 단일 호출 기준. 가드레일 강등(premium→standard) 시 ~91% 절감 |
-| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회 (캡), 실측 평균 1.0회 (SMALL/MEDIUM 커밋) | Phase 3 실측. LARGE 커밋에서 need_context 발동 시 증가 예상 |
+| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회 (캡), 실측 평균 1.0~3.0회 (커밋 크기·LLM 응답 길이에 따라) | Phase 3 실측. retry(JSON 잘림) + need_context(GitHub file fetch) 분기 모두 발동 확인 |
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
 | Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
@@ -42,6 +42,47 @@
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-19] Code Review — PR #11 멀티 앵글 리뷰 및 HIGH 버그 4개 수정
+
+**카테고리**: 트러블슈팅 + 코드 품질
+
+**리뷰 방식**
+
+Phase 3 PR(#11)에 대해 10개 앵글 병렬 에이전트 리뷰 실행:
+A(라인별 스캔) · B(제거 동작 감사) · C(크로스파일 추적) · D(Java 함정) · E(래퍼 정확성) + Reuse · Simplification · Efficiency · Altitude · Conventions(CLAUDE.md) → verify(1-vote) → sweep.
+
+**발견된 버그 (10건, 4 HIGH confirmed)**
+
+| # | Severity | 파일 | 이슈 |
+|---|----------|------|------|
+| 1 | 🔴 HIGH ✅ | `BaseWorker.java:92` | `parseRepo()` `IllegalArgumentException` 미처리 → AMQP 무한 requeue |
+| 2 | 🔴 HIGH ✅ | `LlmResponse.java:34` | `parseError()` null-status 응답을 `"complete"` 처리 → 루프 조기 종료 |
+| 3 | 🔴 HIGH ✅ | `BaseWorker.java:100` | 최종 이터레이션 `need_context` 반환 시 `GUARDRAIL_ACTION=force_terminate` 오기록 |
+| 4 | 🔴 HIGH ✅ | `GitHubFileClient.java:59` | `ref.substring(0,7)` — SHA < 7자 시 `StringIndexOutOfBoundsException`, 성공한 fetch 결과 버려짐 |
+| 5 | 🟡 MED ⚠️ | `GitHubFileClient.java:61` | `e.getMessage()` null → `StringBuilder.append(null)` → LLM 컨텍스트에 리터럴 `"null"` 삽입 |
+| 6 | 🟡 MED ⚠️ | `GitHubFileClient.java:60` | 404/403 silently swallowed → 파일 fetch 실패가 `(fetch failed: ...)` 텍스트로 LLM에 전달 |
+| 7 | 🔵 LOW ✅ | `GitHubFileClient.java` + `LlmResponse.java` | 단위 테스트 없음 (CLAUDE.md 위반) |
+| 8 | 🔵 LOW ⚠️ | `BaseWorker.java:79` | `AGENT_LOOP_ITERATION` 매 이터레이션 덮어씀 → 마지막 번호 vs 총 횟수 구분 불가 |
+| 9 | 🔵 LOW ⚠️ | `BaseWorker.java:42` | `ThreadLocal` 인스턴스 필드 (비-static) → context refresh 시 AMQP 스레드 풀 slot 누수 |
+| 10 | 🔵 LOW ⚠️ | `BaseWorker.java:154` | `invokeLlm()`이 model을 독립적으로 재결정 → 서브클래스 `resolveModel()` 오버라이드 시 span label과 API 호출 불일치 가능 |
+
+**수정 내용 (HIGH 4개 즉시 반영)**
+
+1. `ref.substring(0,7)` → `ref.length() >= 7 ? ref.substring(0,7) : ref` (crash 방지)
+2. `e.getMessage()` null 가드: null 메시지 → `e.getClass().getSimpleName()`으로 fallback
+3. `LlmResponse.parseError()` → `LlmResponse.missingStatus()`: null-status 응답을 `"complete"` 대신 `"retry"` 반환
+4. `parseRepo()` `IllegalArgumentException` catch: `runAgentLoop` 내에서 잡아 span에 `guardrail.reason=invalid_repo_url` 기록 후 조기 종료 (무한 requeue 방지)
+5. 루프 캡 `GUARDRAIL_REASON`에 `last_status` 포함: `"max_iterations_5_reached (last_status=need_context)"` → Grafana에서 런어웨이 루프 vs 합법적 context 요청 구분 가능
+
+**결과 (수치)**
+
+- 리뷰 앵글: 10개 → 후보 ~30개 → 중복 제거 후 10개 최종 (REFUTED 2건: URI template 확장, resolveModel 결정론적)
+- 수정 커밋: `13f0255` (3 files, 27 insertions, 12 deletions)
+- 빌드: `BUILD SUCCESSFUL`, 기존 테스트 전체 통과
+- PR #11 머지 완료 (2026-06-19T05:39:05Z)
 
 ---
 
@@ -76,7 +117,9 @@ at line: 4, column: 1267
 
 이후 재시도 시 LLM이 동일 diff에 대해 더 간결한 JSON을 생성해 완료.
 
-**실측 루프 횟수 데이터 (Phase 3)**
+**실측 루프 횟수 데이터 (Phase 3 — 전체)**
+
+초기 테스트 (JSON 잘림 수정 후):
 
 | 커밋 크기 | 모델 | Input | Output | 이터레이션 | status |
 |---|---|---|---|---|---|
@@ -84,12 +127,36 @@ at line: 4, column: 1267
 | MEDIUM | claude-haiku-4-5 | 2,344 | 697 | 1 | complete |
 | SMALL | claude-haiku-4-5 | 530 | 387 | 1 | complete |
 
+추가 테스트 (HIGH 버그 수정 후 — `retry` 및 `need_context` 실제 발동 확인):
+
+| 커밋 크기 | 워커 | 모델 | Input | 이터레이션 | 상세 |
+|---|---|---|---|---|---|
+| MEDIUM | code_review | claude-haiku-4-5 | 1,726 | 3 | iter 1→retry(잘림), iter 2→retry(잘림), iter 3→complete |
+| SMALL | code_review | claude-haiku-4-5 | 2,281 | 2 | iter 1→retry(잘림), iter 2→complete |
+| SMALL (script diff) | test_gen | claude-haiku-4-5 | 2,467→7,055 | 5 (캡 도달) | iter 1→**need_context** (파일 3개 fetch), iter 2~5→retry(잘림), **loop cap** |
+
+**`need_context` 실측 상세 (2026-06-19 19:48)**
+
+```
+[worker.test_gen] task=27c77625 iter=1 in=2,467 out=210 status=need_context
+[worker.test_gen] task=27c77625 need_context → fetching 5 files (MAX_FILES_PER_REQUEST=3으로 3개 제한)
+[github-file] fetched scripts/context-loader.sh @ 17271c3 (4,286 chars)
+[github-file] fetched scripts/prompt-selector.sh @ 17271c3 (2,419 chars)
+[github-file] fetched scripts/constraint-check.sh @ 17271c3 (3,128 chars)
+[worker.test_gen] task=27c77625 iter=2 in=7,055 out=2,048 status=retry  ← 컨텍스트 추가 후 토큰 폭증
+[worker.test_gen] task=27c77625 iter=3,4,5 in=7,055 out=2,048 status=retry
+[worker.test_gen] hit loop cap (5, last_status=retry)  ← 수정된 GUARDRAIL_REASON 포함
+```
+
 **결과 (수치)**
 
-- Phase 3 실측 평균 루프 횟수: **1.0회** (현재까지 `need_context`/`retry` 미발동 케이스)
-- `maxTokens` 증가 효과: MEDIUM 커밋(2348 input) JSON 완성 성공 (이전 728토큰 잘림 → 697토큰 완성)
-- `retry` 분기 동작 확인: `max_tokens` stopReason + JSON parse 실패 모두 감지 가능
-- Phase 2 stub 대비 Phase 3 실측: **루프 캡 없이 1회로 완료** (stub은 2~3회 가정이었음)
+- `retry` 분기 실제 발동: JSON 잘림(`Unexpected end-of-input`) → retry 재시도 ✅
+- `need_context` 분기 실제 발동: iter=1에 need_context → GitHub Contents API로 파일 3개 즉시 fetch ✅
+- `last_status=retry` GUARDRAIL_REASON 포맷 동작 확인 ✅ (HIGH 버그 수정 효과)
+- fetch 후 input 토큰: 2,467 → 7,055 (+186%) — 컨텍스트 파일이 대폭 추가됨
+- 루프 캡 도달: fetch된 컨텍스트로도 output이 maxTokens(2048)를 초과 → 루프 캡까지 retry 반복
+  - **후속 개선 필요**: maxTokens 2048 → 4096 상향 또는 fetch 파일 요약 후 전달 검토
+- Phase 2 stub 가정(2~3회) vs Phase 3 실측: SMALL/MEDIUM 1~3회 일치, need_context 케이스는 5회 캡 도달
 
 ---
 
