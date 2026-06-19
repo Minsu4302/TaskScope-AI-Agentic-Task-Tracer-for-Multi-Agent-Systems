@@ -15,14 +15,18 @@ public class AnthropicLlmClient {
     private static final Logger log = LoggerFactory.getLogger(AnthropicLlmClient.class);
 
     private final AnthropicClient client;
+    private final long maxTokens;
 
-    public AnthropicLlmClient(@Value("${anthropic.api-key:}") String apiKey) {
+    public AnthropicLlmClient(
+            @Value("${anthropic.api-key:}") String apiKey,
+            @Value("${anthropic.max-tokens:4096}") long maxTokens) {
+        this.maxTokens = maxTokens;
         // api-key가 비어 있으면 ANTHROPIC_API_KEY 환경변수에서 자동으로 읽음
         this.client = apiKey.isBlank()
                 ? AnthropicOkHttpClient.fromEnv()
                 : AnthropicOkHttpClient.builder().apiKey(apiKey).build();
-        log.info("[anthropic] client initialized (apiKey from {})",
-                apiKey.isBlank() ? "env" : "config");
+        log.info("[anthropic] client initialized (apiKey from {}, maxTokens={})",
+                apiKey.isBlank() ? "env" : "config", maxTokens);
     }
 
     /**
@@ -34,7 +38,7 @@ public class AnthropicLlmClient {
     public Message call(String model, String systemPrompt, String userMessage) {
         MessageCreateParams params = MessageCreateParams.builder()
                 .model(model)
-                .maxTokens(2048L)
+                .maxTokens(maxTokens)
                 .system(systemPrompt)
                 .addUserMessage(userMessage)
                 .build();

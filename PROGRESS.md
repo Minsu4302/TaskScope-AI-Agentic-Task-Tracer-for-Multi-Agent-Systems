@@ -34,7 +34,7 @@
 | 항목 | Before | After | 비고 |
 |---|---|---|---|
 | task당 평균 비용 (premium 3워커 기준) | 제한 없음 시 최대 $1.13 | LARGE $0.217, MEDIUM $0.020, SMALL $0.012 (실측) | Phase 2 단일 호출 기준. 가드레일 강등(premium→standard) 시 ~91% 절감 |
-| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회 (캡), 실측 평균 1.0~3.0회 (커밋 크기·LLM 응답 길이에 따라) | Phase 3 실측. retry(JSON 잘림) + need_context(GitHub file fetch) 분기 모두 발동 확인 |
+| task당 평균 루프 횟수 | 무제한 (캡 없음) | 최대 5회 (캡), 실측: SMALL/MEDIUM 1회, LARGE code_review 1회, LARGE test_gen 5회(캡) | Phase 4 재실측 (greedy regex + 4096). retry 원인 3가지 분류 완료 |
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
 | Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
@@ -42,6 +42,85 @@
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-19] maxTokens 2048→4096 조정 + lazy regex 버그 수정 — Before/After 재실측
+
+**카테고리**: 트러블슈팅 (원인 분석 → 가설 수정 → 검증)
+
+**문제 상황**
+
+Phase 3 실측에서 retry 33%, loop cap 20% 발생. 최초 가설: "maxTokens=2048 초과로 JSON 잘림".  
+그러나 maxTokens를 4096으로 올려도 SMALL(4 diffLines) 커밋에서 iter=4까지 retry 발생:
+```
+iter=1: out=524  → JSON parse failed: Unexpected end-of-input: was expecting closing quote
+iter=2: out=597  → JSON parse failed (same)
+iter=3: out=553  → JSON parse failed (same)
+iter=4: out=464  → complete
+```
+out=464~597은 4096과 무관 → **maxTokens가 원인이 아니었음**.
+
+**원인 분석**
+
+`BaseWorker.extractJson()`의 lazy 정규식이 실제 원인:
+```java
+// Before (bug): lazy *? → 내부 코드블록 ``` 에서 조기 종료
+Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```")
+```
+
+모델이 `"result"` 필드 안에 코드 예시(` ```java ... ``` `)를 포함하면:
+```
+```json
+{
+  "result": "Use this:\n```java\ncode\n```\nmore"
+}
+```
+```
+lazy `*?`가 첫 번째 내부 ` ``` `에서 멈춤 → 캡처 결과: `{\n  "result": "Use this:\n` (미완성)  
+→ Jackson 파싱 에러: "Unexpected end-of-input: was expecting closing quote for a string value"
+
+**해결 방법 (2가지 동시 적용)**
+
+1. **lazy `*?` → greedy `*`** (`BaseWorker.java:29`): 마지막 ` ``` `까지 캡처
+```java
+// After (fixed): greedy * → 마지막 ``` 까지 캡처, 내부 코드블록 무시
+Pattern.compile("```(?:json)?\\s*([\\s\\S]*)```")
+```
+2. **maxTokens 2048 → 4096** 환경변수화 (`application.yml` + `AnthropicLlmClient.java`):
+   - `anthropic.max-tokens: ${LLM_MAX_TOKENS:4096}` (기본값 4096, 실험 시 코드 수정 불필요)
+   - LARGE(Sonnet) 커밋의 자연스러운 출력 길이(~2100 토큰)가 2048을 초과하는 케이스 해소
+
+**결과 — Before/After 실측표 (동일 커밋 크기 기준)**
+
+| 지표 | Before (2048 + lazy) | After (4096 + greedy) | 변화 |
+|---|---|---|---|
+| SMALL code_review (iter) | 4회 (retry×3) | **1회** | -75% |
+| SMALL code_review 비용 | $0.012 (4 iter 합산) | **$0.002** | -83% |
+| MEDIUM code_review (iter) | 1~3회 | **1회** | 안정화 |
+| MEDIUM test_gen out=1960 (iter) | retry(2048 초과 예측) | **1회** | 잘림 해소 ✓ |
+| LARGE code_review Sonnet out=2139 (iter) | retry(2048 초과) | **1회** | 잘림 해소 ✓ |
+| LARGE test_gen Sonnet (iter) | loop cap(5) | **loop cap(5)** | 변화 없음 |
+
+**LARGE test_gen Sonnet 잔존 문제 (신규 발견)**
+
+`LARGE test_gen (d1249d8, 465 diffLines, Sonnet, in=7203)`:
+- iter=1~5: out=4096 매번 maxTokens 도달 → loop cap
+- 비용: $0.083 × 5회 = **$0.415** (maxTokens=2048보다 오히려 5배 증가)
+- 원인: 테스트 코드는 구조적으로 장문 — 4096도 부족한 "본질적 장문 task 유형"
+- 결론: **이 케이스는 maxTokens 증가로 해결 불가**. 다음 단계 설계 필요:
+  - 옵션 A: `test_gen`에 한해 "파일 분할 → 워커별 테스트 케이스 분리" 프롬프트 전략
+  - 옵션 B: 복잡도 분류 고도화 — LARGE test_gen을 별도 task 유형으로 분리
+
+**원인 분류 재정리 (retry 3가지 유형)**
+
+| 유형 | 원인 | 수정 후 |
+|---|---|---|
+| lazy regex 잘림 | 모델 응답 내 코드블록 backtick 충돌 | ✅ greedy regex로 해소 |
+| maxTokens=2048 초과 | LARGE 커밋(Sonnet) output ~2100 토큰 | ✅ 4096으로 해소 |
+| 본질적 장문 (test_gen LARGE) | 테스트 코드 생성 자체가 4096+ 토큰 필요 | ❌ 미해결 (다음 단계 과제) |
+
+**커밋**: `feat/max-tokens-4096-remeasure` 브랜치, `AnthropicLlmClient.java` + `application.yml` + `BaseWorker.java`
 
 ---
 
