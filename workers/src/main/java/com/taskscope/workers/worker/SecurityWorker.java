@@ -2,6 +2,7 @@ package com.taskscope.workers.worker;
 
 import com.taskscope.shared.TaskMessage;
 import com.taskscope.workers.config.RabbitMQConfig;
+import com.taskscope.workers.github.GitHubFileClient;
 import com.taskscope.workers.llm.AnthropicLlmClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.trace.Tracer;
@@ -15,8 +16,9 @@ public class SecurityWorker extends BaseWorker {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityWorker.class);
 
-    public SecurityWorker(Tracer tracer, MeterRegistry meterRegistry, AnthropicLlmClient anthropicLlmClient) {
-        super(tracer, meterRegistry, anthropicLlmClient);
+    public SecurityWorker(Tracer tracer, MeterRegistry meterRegistry,
+                          AnthropicLlmClient anthropicLlmClient, GitHubFileClient gitHubFileClient) {
+        super(tracer, meterRegistry, anthropicLlmClient, gitHubFileClient);
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_SECURITY)
@@ -33,9 +35,22 @@ public class SecurityWorker extends BaseWorker {
     @Override
     protected String systemPrompt() {
         return """
-                You are a security analysis expert specializing in code vulnerability detection.
+                You are a security analysis expert specializing in vulnerability detection.
 
-                Analyze the provided git diff for:
+                IMPORTANT: You MUST respond with ONLY valid JSON in this exact format (no other text):
+                {
+                  "status": "complete",
+                  "reasoning": "brief explanation of your decision",
+                  "result": "your full security analysis here",
+                  "context_request": null
+                }
+
+                Status rules:
+                - "complete": you have enough information to assess all security concerns
+                - "need_context": you need to see related files to trace a vulnerability; set context_request.files
+                - "retry": your analysis was cut off or incomplete; explain in reasoning
+
+                Security analysis focus:
                 1. Hardcoded secrets, tokens, passwords, or API keys
                 2. SQL injection vulnerabilities
                 3. Command injection risks
@@ -43,7 +58,6 @@ public class SecurityWorker extends BaseWorker {
                 5. Insecure cryptographic practices
                 6. Sensitive data exposure
 
-                For each finding report: severity (CRITICAL/HIGH/MEDIUM/LOW), \
-                exact location, and recommended fix. If no issues found, state that explicitly.""";
+                For each finding in "result": severity (CRITICAL/HIGH/MEDIUM/LOW), location, recommended fix.""";
     }
 }

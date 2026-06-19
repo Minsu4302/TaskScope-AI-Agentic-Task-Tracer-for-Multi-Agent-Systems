@@ -9,6 +9,8 @@ dependencies {
     implementation(project(":shared"))
     implementation(platform("org.springframework.boot:spring-boot-dependencies:3.3.1"))
     implementation("org.springframework.boot:spring-boot-starter-amqp")
+    // RestClient (GitHub file fetch용) — web-application-type=none으로 HTTP 서버는 비활성화
+    implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     // Micrometer OTel 브리지: AMQP consumer span 자동 생성 + traceparent 추출
     implementation("io.micrometer:micrometer-tracing-bridge-otel")

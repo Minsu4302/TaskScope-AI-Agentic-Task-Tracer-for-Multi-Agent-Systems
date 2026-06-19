@@ -1,6 +1,8 @@
 spring:
   application:
     name: taskscope-workers
+  main:
+    web-application-type: none   # HTTP 서버 없이 RestClient만 사용
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -28,3 +30,6 @@ management:
 
 anthropic:
   api-key: ${ANTHROPIC_API_KEY:}
+
+github:
+  token: ${GITHUB_TOKEN:}
