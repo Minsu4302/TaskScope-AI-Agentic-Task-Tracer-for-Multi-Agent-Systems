@@ -74,11 +74,13 @@ public abstract class BaseWorker {
     }
 
     private void runAgentLoop(TaskMessage message, Span workerSpan, String model) {
+        String lastLoopReason = "none";
         try {
             for (int i = 1; i <= MAX_LOOP_ITERATIONS; i++) {
                 workerSpan.setAttribute(SpanAttributes.AGENT_LOOP_ITERATION, i);
 
                 LlmResult result = callLlm(message, i, model);
+                lastLoopReason = result.loopReason();
                 if (result.finished()) {
                     log.info("[{}] task={} finished at iteration {} (reason={})",
                             spanName(), message.taskId(), i, result.loopReason());
@@ -89,18 +91,26 @@ public abstract class BaseWorker {
                 if ("need_context".equals(result.loopReason()) && !result.requestedFiles().isEmpty()) {
                     log.info("[{}] task={} need_context → fetching {} files",
                             spanName(), message.taskId(), result.requestedFiles().size());
-                    String fetchedContext = gitHubFileClient.fetchFiles(
-                            message.repoUrl(), message.commitSha(), result.requestedFiles());
-                    extraContextHolder.set(fetchedContext);
+                    try {
+                        String fetchedContext = gitHubFileClient.fetchFiles(
+                                message.repoUrl(), message.commitSha(), result.requestedFiles());
+                        extraContextHolder.set(fetchedContext);
+                    } catch (IllegalArgumentException e) {
+                        log.error("[{}] task={} invalid repoUrl, aborting: {}", spanName(), message.taskId(), e.getMessage());
+                        workerSpan.setAttribute(SpanAttributes.GUARDRAIL_REASON, "invalid_repo_url: " + e.getMessage());
+                        return;
+                    }
                 }
                 // retry: 동일 컨텍스트로 재시도 (extraContextHolder 유지)
             }
 
-            log.warn("[{}] task={} hit loop cap ({})", spanName(), message.taskId(), MAX_LOOP_ITERATIONS);
+            // 루프 캡 도달: 마지막 status를 reason에 포함해 dashboards에서 구분 가능하게
+            log.warn("[{}] task={} hit loop cap ({}, last_status={})",
+                    spanName(), message.taskId(), MAX_LOOP_ITERATIONS, lastLoopReason);
             workerSpan.setAttribute(SpanAttributes.AGENT_LOOP_CAP_HIT, true);
             workerSpan.setAttribute(SpanAttributes.GUARDRAIL_ACTION, "force_terminate");
             workerSpan.setAttribute(SpanAttributes.GUARDRAIL_REASON,
-                    "max_iterations_" + MAX_LOOP_ITERATIONS + "_reached");
+                    "max_iterations_" + MAX_LOOP_ITERATIONS + "_reached (last_status=" + lastLoopReason + ")");
         } finally {
             extraContextHolder.remove();
         }
@@ -190,7 +200,10 @@ public abstract class BaseWorker {
         try {
             String json = extractJson(text);
             LlmResponse parsed = OBJECT_MAPPER.readValue(json, LlmResponse.class);
-            if (parsed.status() == null) return LlmResponse.parseError(text);
+            if (parsed.status() == null) {
+                log.warn("[{}] LLM response missing status field, will retry", spanName());
+                return LlmResponse.missingStatus();
+            }
             return parsed;
         } catch (Exception e) {
             // JSON 파싱 실패 = 불완전한 응답 → retry (complete 처리 방지)

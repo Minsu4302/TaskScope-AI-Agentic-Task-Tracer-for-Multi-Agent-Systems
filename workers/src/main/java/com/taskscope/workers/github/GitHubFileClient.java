@@ -56,10 +56,12 @@ public class GitHubFileClient {
                 String content = fetchFile(owner, repo, path.trim(), ref);
                 sb.append("\n=== FILE: ").append(path).append(" ===\n")
                   .append(content).append("\n");
-                log.info("[github-file] fetched {}/{} @ {} ({} chars)", owner + "/" + repo, path, ref.substring(0, 7), content.length());
+                String shortRef = ref.length() >= 7 ? ref.substring(0, 7) : ref;
+                log.info("[github-file] fetched {}/{} @ {} ({} chars)", owner + "/" + repo, path, shortRef, content.length());
             } catch (Exception e) {
-                sb.append("\n=== FILE: ").append(path).append(" (fetch failed: ").append(e.getMessage()).append(") ===\n");
-                log.warn("[github-file] failed to fetch {}: {}", path, e.getMessage());
+                String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                sb.append("\n=== FILE: ").append(path).append(" (fetch failed: ").append(msg).append(") ===\n");
+                log.warn("[github-file] failed to fetch {}: {}", path, msg);
             }
         });
 

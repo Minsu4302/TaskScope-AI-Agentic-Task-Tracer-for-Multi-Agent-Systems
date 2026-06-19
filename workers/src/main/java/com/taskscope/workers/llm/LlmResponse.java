@@ -30,8 +30,8 @@ public record LlmResponse(
                 : List.of();
     }
 
-    /** JSON 파싱 실패 시 fail-safe 응답 */
-    public static LlmResponse parseError(String rawText) {
-        return new LlmResponse("complete", "json_parse_error", rawText, null);
+    /** status 필드 누락 시 retry 응답 — complete 오처리 방지 */
+    public static LlmResponse missingStatus() {
+        return new LlmResponse("retry", "missing_status_field", "", null);
     }
 }
