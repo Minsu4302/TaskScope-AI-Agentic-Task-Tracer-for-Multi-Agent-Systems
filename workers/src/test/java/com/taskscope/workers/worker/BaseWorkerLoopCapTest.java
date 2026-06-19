@@ -16,7 +16,8 @@ class BaseWorkerLoopCapTest {
     private static final SimpleMeterRegistry METER_REGISTRY = new SimpleMeterRegistry();
 
     private static final TaskMessage SAMPLE = new TaskMessage(
-            "task-1", "test", "https://github.com/example/repo", "42", 100, "standard"
+            "task-1", "test", "https://github.com/example/repo",
+            "abc123", "", 100, "standard", "single_commit"
     );
 
     @Test

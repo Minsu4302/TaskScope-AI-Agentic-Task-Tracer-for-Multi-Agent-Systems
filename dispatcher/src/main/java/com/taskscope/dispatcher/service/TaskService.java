@@ -66,7 +66,9 @@ public class TaskService {
                 TaskMessage message = new TaskMessage(
                         taskId, taskType,
                         request.repoUrl(), request.prNumber(),
-                        request.diffLines(), effectiveGrade
+                        "",                   // commitDiff: 구 엔드포인트는 실제 diff 없음
+                        request.diffLines(), effectiveGrade,
+                        "single_commit"
                 );
                 amqpTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, queueName, message);
             }

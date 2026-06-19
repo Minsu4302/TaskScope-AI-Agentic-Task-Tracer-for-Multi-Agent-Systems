@@ -7,8 +7,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -62,8 +60,12 @@ public class CostGuardrailService {
         );
 
         try {
+            // {q} 플레이스홀더로 분리: query 값 안의 중괄호(PromQL 레이블 선택자)가
+            // Spring URI 템플릿 변수로 오해되지 않도록 Map.of("q", query)로 전달
             PrometheusQueryResponse response = restClient.get()
-                    .uri("/api/v1/query?query=" + URLEncoder.encode(query, StandardCharsets.UTF_8))
+                    .uri(b -> b.path("/api/v1/query")
+                               .queryParam("query", "{q}")
+                               .build(Map.of("q", query)))
                     .retrieve()
                     .body(PrometheusQueryResponse.class);
 
@@ -84,6 +86,9 @@ public class CostGuardrailService {
             return null;
         } catch (NumberFormatException e) {
             log.warn("[guardrail] Prometheus 응답 파싱 실패: {}", e.getMessage());
+            return null;
+        } catch (Exception e) {
+            log.warn("[guardrail] 예기치 못한 오류, 비용 체크 skip: {}", e.getMessage());
             return null;
         }
     }
