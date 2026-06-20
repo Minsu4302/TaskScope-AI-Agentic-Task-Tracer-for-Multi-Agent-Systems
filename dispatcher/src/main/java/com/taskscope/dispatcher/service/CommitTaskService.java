@@ -105,11 +105,13 @@ public class CommitTaskService {
 
         for (SampledCommit commit : sampled) {
             String taskId = UUID.randomUUID().toString();
-            String grade = complexityRouter.route(commit.diffLines());
+            List<String> changedFiles = extractChangedFiles(commit.diff());
+            // base grade for span/response (no task-type context)
+            String baseGrade = complexityRouter.route(commit.diffLines());
 
             Span taskSpan = tracer.spanBuilder("task.dispatch")
                     .setAttribute(SpanAttributes.TASK_ID, taskId)
-                    .setAttribute(SpanAttributes.TASK_COMPLEXITY, grade)
+                    .setAttribute(SpanAttributes.TASK_COMPLEXITY, baseGrade)
                     .setAttribute(SpanAttributes.COMMIT_SHA, commit.sha())
                     .setAttribute(SpanAttributes.TASK_UNIT, "single_commit")
                     .startSpan();
@@ -119,6 +121,8 @@ public class CommitTaskService {
                     String queue = TASK_TYPE_TO_QUEUE.get(taskType);
                     if (queue == null) continue;
 
+                    // A+B: per-task-type grade with file extension and worker-type awareness
+                    String grade = complexityRouter.route(commit.diffLines(), changedFiles, taskType);
                     CostGuardrailService.GuardrailResult guardrail =
                             costGuardrailService.apply(grade, taskType);
                     String effectiveGrade = guardrail.effectiveGrade();
@@ -143,7 +147,7 @@ public class CommitTaskService {
             dispatched.add(new DispatchedCommit(
                     taskId, commit.repoFullName(), commit.sha(), commit.message(),
                     commit.diffLines(), commit.size().name(),
-                    complexityRouter.route(commit.diffLines()), taskTypes
+                    baseGrade, taskTypes
             ));
         }
 
@@ -161,14 +165,18 @@ public class CommitTaskService {
 
             String taskId = UUID.randomUUID().toString();
             int totalLines = group.stream().mapToInt(SampledCommit::diffLines).sum();
-            String grade = complexityRouter.route(totalLines);
             String combinedSha = group.stream().map(SampledCommit::sha).reduce((a, b) -> a + "," + b).orElse("");
             String combinedDiff = group.stream().map(SampledCommit::diff).reduce("", (a, b) -> a + "\n" + b);
             String primaryRepo = group.get(0).repoFullName();
+            List<String> changedFiles = group.stream()
+                    .flatMap(c -> extractChangedFiles(c.diff()).stream())
+                    .distinct()
+                    .toList();
+            String baseGrade = complexityRouter.route(totalLines);
 
             Span taskSpan = tracer.spanBuilder("task.dispatch")
                     .setAttribute(SpanAttributes.TASK_ID, taskId)
-                    .setAttribute(SpanAttributes.TASK_COMPLEXITY, grade)
+                    .setAttribute(SpanAttributes.TASK_COMPLEXITY, baseGrade)
                     .setAttribute(SpanAttributes.COMMIT_SHA, combinedSha)
                     .setAttribute(SpanAttributes.TASK_UNIT, "commit_group")
                     .startSpan();
@@ -178,6 +186,8 @@ public class CommitTaskService {
                     String queue = TASK_TYPE_TO_QUEUE.get(taskType);
                     if (queue == null) continue;
 
+                    // A+B: per-task-type grade with file extension and worker-type awareness
+                    String grade = complexityRouter.route(totalLines, changedFiles, taskType);
                     CostGuardrailService.GuardrailResult guardrail =
                             costGuardrailService.apply(grade, taskType);
                     String effectiveGrade = guardrail.effectiveGrade();
@@ -200,7 +210,7 @@ public class CommitTaskService {
             dispatched.add(new DispatchedCommit(
                     taskId, primaryRepo, combinedSha,
                     "Group of " + group.size() + " commits", totalLines,
-                    CommitSampler.sizeOf(totalLines).name(), grade, taskTypes
+                    CommitSampler.sizeOf(totalLines).name(), baseGrade, taskTypes
             ));
         }
 
@@ -215,5 +225,17 @@ public class CommitTaskService {
         if (message == null) return "";
         int nl = message.indexOf('\n');
         return nl > 0 ? message.substring(0, nl) : message;
+    }
+
+    // "diff --git a/foo/bar.sh b/foo/bar.sh" → ["foo/bar.sh"]
+    static List<String> extractChangedFiles(String diff) {
+        if (diff == null || diff.isBlank()) return List.of();
+        return diff.lines()
+                .filter(line -> line.startsWith("diff --git"))
+                .map(line -> {
+                    int bIdx = line.lastIndexOf(" b/");
+                    return bIdx >= 0 ? line.substring(bIdx + 3) : line;
+                })
+                .toList();
     }
 }
