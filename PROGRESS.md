@@ -38,6 +38,7 @@
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
 | Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
+| 복잡도 분류기 피처 수 | 1개 (diffLines 단일 임계값) | **3개** (diffLines + 파일 확장자 + 워커 종류) | Phase 5. 가설 C(import 수)는 교란변수로 기각 |
 
 ---
 
@@ -96,6 +97,37 @@
 - 비용: $0 (코드 변경, LLM 호출 없음)
 - 예상 효과: `.sh`/`.yml` 포함 커밋 → Sonnet 라우팅으로 need_context 루프 1회 감소 예상
   (Phase 3 실측 기준 need_context 비용: Haiku ~$0.003/iteration → Sonnet으로 줄이면 iteration↓, 총비용↓)
+
+---
+
+### [2026-06-20] Phase 5 — 가설 C 검증 시도 및 기각
+
+**카테고리**: 설계 결정 (가설 기각)
+
+**가설**: import 개수 ≥10인 Java 파일을 변경한 커밋은 need_context 발생률이 높다.
+
+**검증 시도**
+
+가설 C를 독립 검증하기 위해 이 레포(TaskScope)의 커밋 이력에서 4개 샘플(HIGH import 2개 + LOW import 2개)을 선별하려 했다.
+
+커밋별 import 추가 수와 diff 크기를 측정한 결과:
+
+| 그룹 | 커밋 | diff `+import` 수 | 총 diff 크기 |
+|---|---|---|---|
+| HIGH import | `3de0477` (Phase 3 LLM 루프) | +21줄 | LARGE 368줄 |
+| HIGH import | `b5954f2` (실제 API 교체) | +13줄 | MEDIUM 201줄 |
+| LOW import | `45f9226` (로그 버그 수정) | +0줄 | SMALL 55줄 |
+| LOW import | `21eeaf7` (JSON 잘림 수정) | +0줄 | SMALL 16줄 |
+
+**교란변수 발견 → 가설 기각**
+
+이 데이터셋에서 import 추가량과 diff 크기가 강하게 상관되어 있음 (HIGH import = 항상 LARGE diff, LOW import = 항상 SMALL diff). 두 변수의 독립적 효과를 현재 데이터셋에서 분리할 수 없다고 판단, **가설 C는 기각**.
+
+import 수를 "측정 불가 피처"로 기록하여 추후 다른 데이터셋에서 재검증 가능하도록 남김.
+
+**결과 (수치)**
+- 비용: $0 (LLM 호출 없이 분석만 수행)
+- A/B 두 피처만 분류기에 반영, C는 제외
 
 ---
 
