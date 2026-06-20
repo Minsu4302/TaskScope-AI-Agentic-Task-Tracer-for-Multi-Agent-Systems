@@ -70,21 +70,29 @@ public class CommitTaskService {
 
     private List<SampledCommit> fetchCandidates(CommitTaskRequest request) {
         List<SampledCommit> candidates = new ArrayList<>();
+        boolean pinned = request.shas() != null && !request.shas().isEmpty();
+
         for (String repoFullName : request.repos()) {
             String[] parts = repoFullName.split("/", 2);
             String owner = parts[0], repo = parts[1];
 
-            List<GitHubCommit> summaries;
-            try {
-                summaries = gitHubClient.listCommits(owner, repo, request.effectiveCommitsPerRepo());
-            } catch (Exception e) {
-                log.error("Failed to list commits for {}: {}", repoFullName, e.getMessage());
-                continue;
+            List<String> targetShas;
+            if (pinned) {
+                targetShas = request.shas();
+            } else {
+                List<GitHubCommit> summaries;
+                try {
+                    summaries = gitHubClient.listCommits(owner, repo, request.effectiveCommitsPerRepo());
+                } catch (Exception e) {
+                    log.error("Failed to list commits for {}: {}", repoFullName, e.getMessage());
+                    continue;
+                }
+                targetShas = summaries.stream().map(GitHubCommit::sha).toList();
             }
 
-            for (GitHubCommit summary : summaries) {
+            for (String sha : targetShas) {
                 try {
-                    GitHubCommit full = gitHubClient.getCommit(owner, repo, summary.sha());
+                    GitHubCommit full = gitHubClient.getCommit(owner, repo, sha);
                     if (full.diffLines() == 0) continue;  // 빈 커밋(merge commit 등) 제외
                     candidates.add(new SampledCommit(
                             repoFullName, full.sha(), firstLine(full.message()),
@@ -92,7 +100,7 @@ public class CommitTaskService {
                             CommitSampler.sizeOf(full.diffLines())
                     ));
                 } catch (Exception e) {
-                    log.warn("Skipping commit {} in {}: {}", summary.sha(), repoFullName, e.getMessage());
+                    log.warn("Skipping commit {} in {}: {}", sha, repoFullName, e.getMessage());
                 }
             }
         }

@@ -36,8 +36,8 @@ class ComplexityRouterTest {
     }
 
     @Test
-    void premium_mapsToOpusModel() {
-        assertThat(router.modelFor("premium")).isEqualTo("claude-opus-4-8");
+    void premium_mapsToSonnetModel() {
+        assertThat(router.modelFor("premium")).isEqualTo("claude-sonnet-4-6");
     }
 
     // --- Hypothesis B: test_gen lower threshold ---

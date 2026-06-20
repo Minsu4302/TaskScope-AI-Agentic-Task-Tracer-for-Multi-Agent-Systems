@@ -34,6 +34,6 @@ public class ComplexityRouter {
     }
 
     public String modelFor(String modelGrade) {
-        return "premium".equals(modelGrade) ? "claude-opus-4-8" : "claude-haiku-4-5";
+        return "premium".equals(modelGrade) ? "claude-sonnet-4-6" : "claude-haiku-4-5";
     }
 }

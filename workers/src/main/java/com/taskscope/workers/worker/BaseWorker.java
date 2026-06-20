@@ -177,6 +177,9 @@ public abstract class BaseWorker {
                 spanName(), message.taskId(), iteration, model, inputTokens, outputTokens,
                 String.format("%.6f", costUsd), parsed.status());
 
+        log.info("[{}] task={} iter={} result_preview={}", spanName(), message.taskId(), iteration,
+                parsed.result() != null ? parsed.result().substring(0, Math.min(3000, parsed.result().length())) : "(null)");
+
         return new LlmResult(inputTokens, outputTokens, costUsd,
                 parsed.isComplete(), parsed.status(), parsed.requestedFiles());
     }

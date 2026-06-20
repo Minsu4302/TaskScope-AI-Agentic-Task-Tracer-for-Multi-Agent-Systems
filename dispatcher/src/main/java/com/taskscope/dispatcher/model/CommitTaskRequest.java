@@ -4,6 +4,7 @@ import java.util.List;
 
 public record CommitTaskRequest(
         List<String> repos,         // ["Minsu4302/Harness_Infra", "Minsu4302/bitepick-back"]
+        List<String> shas,          // 지정 시 listCommits 생략하고 해당 SHA만 조회 (Phase 6 정밀 비교용)
         Integer commitsPerRepo,     // repo당 가져올 커밋 수 (기본 15)
         Integer sampleSize,         // 최종 샘플 커밋 수 (기본 5)
         String taskUnit,            // "single_commit" | "commit_group" (기본 "single_commit")
