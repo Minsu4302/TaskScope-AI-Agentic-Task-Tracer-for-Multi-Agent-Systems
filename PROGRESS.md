@@ -45,6 +45,60 @@
 
 ---
 
+### [2026-06-20] Phase 5 시작 — 복잡도 분류 고도화 (need_context 피처 탐색)
+
+**카테고리**: 설계 결정 + 성과 측정
+
+**시작 전 체크리스트 확인 결과 (2026-06-20)**
+
+| 항목 | 결과 |
+|---|---|
+| Java 프로세스 정리 | 3개 발견 → 전부 종료, 최종 0개 확인 |
+| RabbitMQ consumers | 각 큐 consumers=0 확인 (워커 미기동 상태) |
+| Docker 스택 | `docker compose up -d` 재기동 완료 |
+
+→ 깨끗한 상태로 Phase 5 시작
+
+---
+
+### [2026-06-20] Phase 5 — 가설 A+B 복잡도 분류기 구현
+
+**카테고리**: 설계 결정 + 구현
+
+**구현 내용**
+
+기존 `ComplexityRouter.route(int diffLines)` (단일 임계값 200) → 파일 확장자 + 워커 종류를 반영한 멀티-피처 라우팅으로 확장.
+
+**가설 A — 파일 확장자(context-heavy types)**
+
+| 변경 전 | 변경 후 |
+|---|---|
+| 확장자 무관 `diffLines ≥ 200` → premium | `.sh`, `.yml`, `.yaml`, `.tf`, `Dockerfile` 포함 시 `diffLines` 무관 → premium |
+
+**근거**: Phase 3 need_context 실측에서 `.sh` 파일 100%(2/2), `.yml` 포함 커밋 100%(2/2) need_context 발생. 이 파일들은 외부 스크립트/설정을 참조해 diff만으로 완전한 리뷰 불가.
+
+**가설 B — 워커 종류별 LARGE 임계값**
+
+| 워커 | Before | After |
+|---|---|---|
+| `code_review`, `security` | 200줄 → premium | 200줄 → premium (유지) |
+| `test_gen` | 200줄 → premium | **150줄 → premium** |
+
+**근거**: Phase 4 재실측에서 `test_gen`이 동일 LARGE 커밋에서 출력 토큰 >4096 발생(루프 캡 도달). `code_review`/`security`는 동일 커밋 1회 완료. 즉 test_gen은 더 낮은 임계값에서 premium(Sonnet) 모델이 필요.
+
+**추가 버그 수정**: `ComplexityRouter.modelFor()` 반환값 `claude-haiku-4-5-20251001` → `claude-haiku-4-5` (날짜 suffix 제거)
+
+**API 변경**: `CommitTaskService`에서 task type별로 `route(diffLines, changedFiles, taskType)` 호출. diff에서 변경 파일 목록 파싱(`diff --git a/... b/...` 라인 추출).
+
+**테스트**: `ComplexityRouterTest` 8개 케이스 추가 + 전체 빌드 통과
+
+**결과 (수치)**
+- 비용: $0 (코드 변경, LLM 호출 없음)
+- 예상 효과: `.sh`/`.yml` 포함 커밋 → Sonnet 라우팅으로 need_context 루프 1회 감소 예상
+  (Phase 3 실측 기준 need_context 비용: Haiku ~$0.003/iteration → Sonnet으로 줄이면 iteration↓, 총비용↓)
+
+---
+
 ### [2026-06-19] 실제 API 비용 급증 원인 분석 — 구 worker 프로세스 누수
 
 **카테고리**: 트러블슈팅 + 운영 교훈
