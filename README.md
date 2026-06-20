@@ -151,6 +151,35 @@ http post /tasks          ← 자동 계측 (HTTP root span)
 | maxTokens=2048 초과 (LARGE Sonnet 자연 출력 ~2100 토큰) | ✅ 4096으로 해소 |
 | 본질적 장문 (test_gen LARGE, 출력 4096+ 토큰) | ❌ 미해결 (아래 한계 참고) |
 
+### 복잡도 분류기 고도화 (Phase 5)
+
+`ComplexityRouter`를 1-피처(diffLines)에서 3-피처 분류기로 확장:
+
+| 피처 | 내용 |
+|---|---|
+| diffLines | code_review/security ≥ 200줄 → premium, test_gen ≥ 150줄 → premium |
+| 파일 확장자 | `.sh`, `.yml`, `.yaml`, `.tf`, `Dockerfile` 포함 시 diffLines 무관 → premium |
+| 워커 종류 | test_gen은 임계값 150으로 낮춤 (출력 토큰이 구조적으로 더 길기 때문) |
+
+Phase 3 실측 기반: `.sh`/`.yml` 포함 커밋에서 need_context 발생률 100% → 이 파일 유형은 diff만으로 완전한 리뷰 불가, premium(Sonnet)으로 라우팅하는 것이 총비용 관점에서도 유리.
+
+### 모델 강등 실측 비교 (Phase 6)
+
+동일한 bug-state 커밋 3개를 premium(Sonnet)과 standard(Haiku)로 각각 처리해 비용·결함 탐지 비교:
+
+| 등급 | 모델 | 건당 평균 비용 | 완결성 |
+|---|---|---|---|
+| Premium | claude-sonnet-4-6 | **$0.0528** | 1 iteration, loop cap 없음 |
+| Standard | claude-haiku-4-5 | **$0.0167** | 1 iteration, loop cap 없음 |
+| 비율 | | **3.2× 절감** | 동일 |
+
+**Standard 결함 탐지율 (ground truth 3건)**: MISS 2건, PARTIAL 1건, HIT 0건
+- `c23acde` (`setObservationEnabled` 누락 → traceparent 전파 불가): MISS
+- `8ed2842` (`TASK_TYPE` attribute 누락): MISS
+- `3de0477` (lazy regex 조기 종료): PARTIAL (언급했으나 실패 케이스 미식별)
+
+**결론**: 완결성·비용 지표만으로는 강등이 무해해 보이지만, 설정 누락성 결함은 Standard에서 일관되게 놓침. 비용 임계값과 무관하게 보안/설정 관련 diff는 premium 유지하는 예외 규칙이 필요.
+
 ---
 
 ## 알려진 한계

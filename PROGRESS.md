@@ -83,12 +83,17 @@
 
 **Premium(Sonnet) 버그 감지율**: 로깅 한계(300자 컷오프, 2차 시도 발생 전 로깅 미구현)로 **측정 불가** — Phase 5의 가설 C 기각과 같은 패턴으로 데이터 수집 실패로 기록.
 
-**결론**
+### Phase 6 결론
 
-Phase 6 원래 핵심 질문 "강등이 버그 탐지율에 미치는 영향"은 Premium 응답 텍스트 미캡처로 측정 불가. 대신 확보된 부분적 데이터:
-- **비용**: Standard가 Premium 대비 3.2× 절감 (LARGE commit 기준)
-- **완결성**: 두 등급 모두 1 iteration, loop cap 없음 → LARGE diff도 단일 호출로 완결 가능
-- **Standard 버그 감지**: 3건 중 0건 명확 감지 (1건 관련 언급 있으나 올바른 실패 케이스 미식별)
+**목표**: 강등(premium→standard)이 실제 결함 탐지에 미치는 영향 측정
+
+**측정 가능했던 것**: 비용·완결성 비교 (Premium $0.0528/건 vs Standard $0.0167/건, 3.2배 차이, 양쪽 모두 1 iteration·loop cap 없음)
+
+**측정 가능했던 것 2**: Standard의 실제 결함 탐지율 — ground truth 3건 중 MISS 2건, PARTIAL 1건, HIT 0건
+
+**측정 불가했던 것**: Premium의 결함 탐지율 (로깅 한계로 텍스트 미캡처, 2회 시도 실패)
+
+**결론**: 비용·완결성 지표만으로는 강등이 "무해"해 보이지만, 실제 ground truth 비교에서는 standard가 설정 누락성 결함(observationEnabled, task.type)을 일관되게 놓침. 비용 가드레일은 결함 탐지 품질을 함께 고려한 정책으로 보완 필요 — 예: 보안/설정 관련 diff는 비용 임계값과 무관하게 premium 유지하는 예외 규칙.
 
 **트러블슈팅 — 로깅 300자 컷오프**
 
