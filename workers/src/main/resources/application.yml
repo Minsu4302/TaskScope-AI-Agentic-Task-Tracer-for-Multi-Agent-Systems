@@ -1,3 +1,7 @@
+logging:
+  file:
+    name: ${WORKERS_LOG_FILE:}
+
 spring:
   application:
     name: taskscope-workers

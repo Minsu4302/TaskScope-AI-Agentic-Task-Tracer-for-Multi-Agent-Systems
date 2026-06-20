@@ -38,10 +38,67 @@
 | trace propagation 정확도 | 0% (워커마다 새 trace 생성) | 100% (19 span 단일 trace) | traceparent 헤더 누락 버그 수정 후 |
 | 비용 급증 원인 파악 시간 | 30분+ (로그 전수 grep) | 3분 이내 (Grafana → Jaeger drill-down) | 추정치 vs 실측치 |
 | Worker 재기동 시 trace context 생존율 | - | 100% (RabbitMQ 헤더 보존 확인) | e2e 시나리오 3 실측 |
+| 복잡도 분류기 피처 수 | 1개 (diffLines) | 3개 (diffLines + 파일 확장자 + 워커 종류) | Phase 5 가설 A+B 구현. 가설 C(import 수)는 교란변수로 기각 |
+| 모델 강등 비용 절감 (LARGE code_review, Phase 6) | Premium(Sonnet) $0.0528/건 | Standard(Haiku) $0.0167/건 | 3.2× 절감. 둘 다 1 iteration 완결 (loop cap 없음) |
 
 ---
 
 ## 기록 시작
+
+---
+
+### [2026-06-20] Phase 6 — 가드레일 강등(premium→standard) 비용·완결성 비교 실측
+
+**카테고리**: 성과 측정 + 트러블슈팅
+
+**목표**
+
+"강등이 실제 버그 탐지에 미치는 영향"을 측정하기 위해 동일한 bug-state 커밋 3개를 premium(Sonnet)과 standard(Haiku)로 각각 dispatch, 비교.
+
+**ground truth 커밋 선정**
+
+| SHA | 버그 내용 | 분류 |
+|-----|----------|------|
+| `3de0477` | `BaseWorker.extractJson()` lazy regex(`[\s\S]*?`) — 중첩 코드블록에서 조기 종료 | LARGE (368줄) |
+| `c23acde` | dispatcher `RabbitMQConfig`에 `setObservationEnabled(true)` 누락 → traceparent 전파 불가 | LARGE (345줄) |
+| `8ed2842` | `llm.call` span에 `TASK_TYPE` attribute 누락 | LARGE (448줄) |
+
+**Standard 강제 방법**: `GUARDRAIL_COST_THRESHOLD_USD=0.000001` → Premium 런 직후 Prometheus `[10m]` 윈도우에 avg cost ($0.053) > threshold → CostGuardrailService가 premium→standard 강등 발동. 코드 변경 없이 기존 가드레일 메커니즘 재사용.
+
+**실측 결과**
+
+| 등급 | 모델 | 3건 합계 | 건당 평균 | avg input | avg output | iter | loop cap |
+|------|------|---------|----------|----------|-----------|------|----------|
+| Premium | claude-sonnet-4-6 | $0.1585 | $0.0528 | 7,436 tok | 2,034 tok | 전부 1 | 없음 |
+| Standard | claude-haiku-4-5 | $0.0501 | $0.0167 | 7,436 tok | 1,850 tok | 전부 1 | 없음 |
+| **비율** | | **3.2×** | **3.2×** | 동일 | −9% | | |
+
+**버그 감지율 (Standard, 3000자 로그 기준)**
+
+| 커밋 | 버그 유형 | Standard(Haiku) 결과 |
+|------|----------|---------------------|
+| `3de0477` | lazy regex | **PARTIAL** — `[\s\S]*?` 언급했으나 "성능 저하" 프레임. 중첩 블록 조기 종료 실패 케이스 미식별 |
+| `c23acde` | observationEnabled | **MISS** — OTel을 "Strength"로 기재, `setObservationEnabled(true)` 누락 미식별 |
+| `8ed2842` | task.type | **MISS** — "Span Attributes Not Validated" 일반 경고만, TASK_TYPE 누락 구체 미식별 |
+
+**Premium(Sonnet) 버그 감지율**: 로깅 한계(300자 컷오프, 2차 시도 발생 전 로깅 미구현)로 **측정 불가** — Phase 5의 가설 C 기각과 같은 패턴으로 데이터 수집 실패로 기록.
+
+**결론**
+
+Phase 6 원래 핵심 질문 "강등이 버그 탐지율에 미치는 영향"은 Premium 응답 텍스트 미캡처로 측정 불가. 대신 확보된 부분적 데이터:
+- **비용**: Standard가 Premium 대비 3.2× 절감 (LARGE commit 기준)
+- **완결성**: 두 등급 모두 1 iteration, loop cap 없음 → LARGE diff도 단일 호출로 완결 가능
+- **Standard 버그 감지**: 3건 중 0건 명확 감지 (1건 관련 언급 있으나 올바른 실패 케이스 미식별)
+
+**트러블슈팅 — 로깅 300자 컷오프**
+
+**문제**: `BaseWorker.invokeLlm()`에 result 텍스트 로깅 없어 1차·2차 Premium 결과(~$0.27) 텍스트 미캡처.
+
+**원인**: 초기 구현 시 응답 텍스트 로깅 필요성 미설계. LLM 호출 비용만 기록하고 내용 불기록.
+
+**해결**: `log.info("[{}] result_preview={}", ..., parsed.result().substring(0, 3000))` 추가. Spring 파일 로깅(`WORKERS_LOG_FILE=workers.log`)으로 영구 캡처.
+
+**교훈**: LLM 워커에서 응답 텍스트를 평가해야 하는 실험을 설계할 때는 반드시 로깅 → 테스트 → 실험 순서를 지켜야 함 (지금은 역순으로 실험 → 로깅 추가 → 재실험이 됨).
 
 ---
 
